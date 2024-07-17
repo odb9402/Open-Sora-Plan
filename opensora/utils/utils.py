@@ -1,27 +1,21 @@
-import os
-
-import torch
-
-import os
-import math
-import torch
+import html
 import logging
+import math
+import os
 import random
+import re
 import subprocess
-import numpy as np
-import torch.distributed as dist
+import urllib.parse as ul
+from collections import OrderedDict
+from typing import Iterable, Union
 
+import numpy as np
+import torch
+import torch.distributed as dist
+from diffusers.utils import is_bs4_available, is_ftfy_available
+from PIL import Image
 # from torch._six import inf
 from torch import inf
-from PIL import Image
-from typing import Union, Iterable
-from collections import OrderedDict
-
-from diffusers.utils import is_bs4_available, is_ftfy_available
-
-import html
-import re
-import urllib.parse as ul
 
 if is_bs4_available():
     from bs4 import BeautifulSoup
@@ -30,6 +24,7 @@ if is_ftfy_available():
     import ftfy
 
 _tensor_or_tensors = Union[torch.Tensor, Iterable[torch.Tensor]]
+
 
 def find_model(model_name):
     """
@@ -46,12 +41,13 @@ def find_model(model_name):
     checkpoint = checkpoint['model']
     return checkpoint
 
+
 #################################################################################
 #                             Training Clip Gradients                           #
 #################################################################################
 
-def get_grad_norm(
-        parameters: _tensor_or_tensors, norm_type: float = 2.0) -> torch.Tensor:
+
+def get_grad_norm(parameters: _tensor_or_tensors, norm_type: float = 2.0) -> torch.Tensor:
     r"""
     Copy from torch.nn.utils.clip_grad_norm_
 
@@ -88,9 +84,11 @@ def get_grad_norm(
     return total_norm
 
 
-def clip_grad_norm_(
-        parameters: _tensor_or_tensors, max_norm: float, norm_type: float = 2.0,
-        error_if_nonfinite: bool = False, clip_grad=True) -> torch.Tensor:
+def clip_grad_norm_(parameters: _tensor_or_tensors,
+                    max_norm: float,
+                    norm_type: float = 2.0,
+                    error_if_nonfinite: bool = False,
+                    clip_grad=True) -> torch.Tensor:
     r"""
     Copy from torch.nn.utils.clip_grad_norm_
 
@@ -128,11 +126,10 @@ def clip_grad_norm_(
 
     if clip_grad:
         if error_if_nonfinite and torch.logical_or(total_norm.isnan(), total_norm.isinf()):
-            raise RuntimeError(
-                f'The total norm of order {norm_type} for gradients from '
-                '`parameters` is non-finite, so it cannot be clipped. To disable '
-                'this error and scale the gradients by the non-finite norm anyway, '
-                'set `error_if_nonfinite=False`')
+            raise RuntimeError(f'The total norm of order {norm_type} for gradients from '
+                               '`parameters` is non-finite, so it cannot be clipped. To disable '
+                               'this error and scale the gradients by the non-finite norm anyway, '
+                               'set `error_if_nonfinite=False`')
         clip_coef = max_norm / (total_norm + 1e-6)
         # Note: multiplying by the clamped coef is redundant when the coef is clamped to 1, but doing so
         # avoids a `if clip_coef < 1:` conditional which can require a CPU <=> device synchronization
@@ -161,6 +158,7 @@ def get_experiment_dir(root_dir, args):
     root_dir += f'-{args.max_image_size}'
     return root_dir
 
+
 def get_precision(args):
     if args.mixed_precision == "bf16":
         dtype = torch.bfloat16
@@ -170,9 +168,11 @@ def get_precision(args):
         dtype = torch.float32
     return dtype
 
+
 #################################################################################
 #                             Training Logger                                   #
 #################################################################################
+
 
 def create_logger(logging_dir):
     """
@@ -184,8 +184,7 @@ def create_logger(logging_dir):
             # format='[\033[34m%(asctime)s\033[0m] %(message)s',
             format='[%(asctime)s] %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S',
-            handlers=[logging.StreamHandler(), logging.FileHandler(f"{logging_dir}/log.txt")]
-        )
+            handlers=[logging.StreamHandler(), logging.FileHandler(f"{logging_dir}/log.txt")])
         logger = logging.getLogger(__name__)
 
     else:  # dummy logger (does nothing)
@@ -197,6 +196,7 @@ def create_logger(logging_dir):
 #################################################################################
 #                      EMA Update/ DDP Training Utils                           #
 #################################################################################
+
 
 @torch.no_grad()
 def update_ema(ema_model, model, decay=0.9999):
@@ -266,6 +266,7 @@ def setup_distributed(backend="nccl", port=None):
 #                             Testing  Utils                                    #
 #################################################################################
 
+
 def save_video_grid(video, nrow=None):
     b, t, h, w, c = video.shape
 
@@ -273,8 +274,7 @@ def save_video_grid(video, nrow=None):
         nrow = math.ceil(math.sqrt(b))
     ncol = math.ceil(b / nrow)
     padding = 1
-    video_grid = torch.zeros((t, (padding + h) * nrow + padding,
-                              (padding + w) * ncol + padding, c), dtype=torch.uint8)
+    video_grid = torch.zeros((t, (padding + h) * nrow + padding, (padding + w) * ncol + padding, c), dtype=torch.uint8)
 
     print(video_grid.shape)
     for i in range(b):
@@ -312,8 +312,9 @@ def collect_env():
 #                          Pixart-alpha  Utils                                  #
 #################################################################################
 
+bad_punct_regex = re.compile(r'[' + '#®•©™&@·º½¾¿¡§~' + '\)' + '\(' + '\]' + '\[' + '\}' + '\{' + '\|' + '\\' + '\/' +
+                             '\*' + r']{1,}')  # noqa
 
-bad_punct_regex = re.compile(r'['+'#®•©™&@·º½¾¿¡§~'+'\)'+'\('+'\]'+'\['+'\}'+'\{'+'\|'+'\\'+'\/'+'\*' + r']{1,}')  # noqa
 
 def text_preprocessing(text):
     # The exact text cleaning as was in the training stage:
@@ -321,10 +322,12 @@ def text_preprocessing(text):
     text = clean_caption(text)
     return text
 
+
 def basic_clean(text):
     text = ftfy.fix_text(text)
     text = html.unescape(html.unescape(text))
     return text.strip()
+
 
 def clean_caption(caption):
     caption = str(caption)
@@ -334,10 +337,12 @@ def clean_caption(caption):
     # urls:
     caption = re.sub(
         r'\b((?:https?:(?:\/{1,3}|[a-zA-Z0-9%])|[a-zA-Z0-9.\-]+[.](?:com|co|ru|net|org|edu|gov|it)[\w/-]*\b\/?(?!@)))',  # noqa
-        '', caption)  # regex for urls
+        '',
+        caption)  # regex for urls
     caption = re.sub(
         r'\b((?:www:(?:\/{1,3}|[a-zA-Z0-9%])|[a-zA-Z0-9.\-]+[.](?:com|co|ru|net|org|edu|gov|it)[\w/-]*\b\/?(?!@)))',  # noqa
-        '', caption)  # regex for urls
+        '',
+        caption)  # regex for urls
     # html:
     caption = BeautifulSoup(caption, features='html.parser').text
 
@@ -363,7 +368,8 @@ def clean_caption(caption):
     # все виды тире / all types of dash --> "-"
     caption = re.sub(
         r'[\u002D\u058A\u05BE\u1400\u1806\u2010-\u2015\u2E17\u2E1A\u2E3A\u2E3B\u2E40\u301C\u3030\u30A0\uFE31\uFE32\uFE58\uFE63\uFF0D]+',  # noqa
-        '-', caption)
+        '-',
+        caption)
 
     # кавычки к одному стандарту
     caption = re.sub(r'[`´«»“”¨]', '"', caption)
@@ -432,7 +438,3 @@ def clean_caption(caption):
     caption = re.sub(r'^\.\S+$', '', caption)
 
     return caption.strip()
-
-
-
-
