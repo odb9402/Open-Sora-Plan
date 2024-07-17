@@ -16,7 +16,6 @@ from torch import inf
 from PIL import Image
 from typing import Union, Iterable
 from collections import OrderedDict
-from torch.utils.tensorboard import SummaryWriter
 
 from diffusers.utils import is_bs4_available, is_ftfy_available
 
@@ -50,27 +49,6 @@ def find_model(model_name):
 #################################################################################
 #                             Training Clip Gradients                           #
 #################################################################################
-import deepspeed
-def print_grad_norm(model):
-    # 计算并打印梯度范数
-    # model_engine = accelerator.deepspeed_engine_wrapped.engine
-    # gradients = model_engine.get_gradients()
-    # grad_norm = get_grad_norm(gradients)
-    # 计算并打印梯度范数
-    grad_norm = 0
-    n_grad = 0
-    for name, param in model.named_parameters():
-        grad_data = deepspeed.utils.safe_get_full_grad(param)
-        # self.print_tensor_stats(grad_data, name=name)
-
-        if grad_data is not None:
-            param_norm = grad_data.norm(2)
-            grad_norm += param_norm.item() ** 2
-            n_grad += 1
-    grad_norm = (grad_norm / n_grad) ** (1. / 2)
-
-    # self.print_msg('=' * 50)
-    print(f'Gradient Norm is : {grad_norm}')
 
 def get_grad_norm(
         parameters: _tensor_or_tensors, norm_type: float = 2.0) -> torch.Tensor:
@@ -214,26 +192,6 @@ def create_logger(logging_dir):
         logger = logging.getLogger(__name__)
         logger.addHandler(logging.NullHandler())
     return logger
-
-
-def create_tensorboard(tensorboard_dir):
-    """
-    Create a tensorboard that saves losses.
-    """
-    if dist.get_rank() == 0:  # real tensorboard
-        # tensorboard
-        writer = SummaryWriter(tensorboard_dir)
-
-    return writer
-
-
-def write_tensorboard(writer, *args):
-    '''
-    write the loss information to a tensorboard file.
-    Only for pytorch DDP mode.
-    '''
-    if dist.get_rank() == 0:  # real tensorboard
-        writer.add_scalar(args[0], args[1], args[2])
 
 
 #################################################################################
