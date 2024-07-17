@@ -1,32 +1,37 @@
+from dataclasses import dataclass
 from importlib import import_module
+from typing import Any, Callable, Dict, Optional, Tuple
 
 import numpy as np
-from typing import Any, Dict, Optional, Tuple, Callable
-from diffusers.utils import USE_PEFT_BACKEND, BaseOutput, deprecate, is_xformers_available
-from diffusers.models.lora import LoRACompatibleConv, LoRACompatibleLinear
-
 import torch
 import torch.nn.functional as F
-from torch import nn
-from diffusers.utils.torch_utils import maybe_allow_in_graph
-from diffusers.models.embeddings import SinusoidalPositionalEmbedding, TimestepEmbedding, Timesteps
-from diffusers.models.normalization import AdaLayerNorm, AdaLayerNormZero
-from diffusers.models.attention_processor import SpatialNorm, LORA_ATTENTION_PROCESSORS, \
-    CustomDiffusionAttnProcessor, CustomDiffusionXFormersAttnProcessor, CustomDiffusionAttnProcessor2_0, \
-    AttnAddedKVProcessor, AttnAddedKVProcessor2_0, SlicedAttnAddedKVProcessor, XFormersAttnAddedKVProcessor, \
-    LoRAAttnAddedKVProcessor, LoRAXFormersAttnProcessor, XFormersAttnProcessor, LoRAAttnProcessor2_0, LoRAAttnProcessor, \
-    AttnProcessor, SlicedAttnProcessor, logger
 from diffusers.models.activations import GEGLU, GELU, ApproximateGELU
+from diffusers.models.attention_processor import (LORA_ATTENTION_PROCESSORS, AttnAddedKVProcessor,
+                                                  AttnAddedKVProcessor2_0, AttnProcessor, CustomDiffusionAttnProcessor,
+                                                  CustomDiffusionAttnProcessor2_0, CustomDiffusionXFormersAttnProcessor,
+                                                  LoRAAttnAddedKVProcessor, LoRAAttnProcessor, LoRAAttnProcessor2_0,
+                                                  LoRAXFormersAttnProcessor, SlicedAttnAddedKVProcessor,
+                                                  SlicedAttnProcessor, SpatialNorm, XFormersAttnAddedKVProcessor,
+                                                  XFormersAttnProcessor, logger)
+from diffusers.models.embeddings import (SinusoidalPositionalEmbedding, TimestepEmbedding, Timesteps)
+from diffusers.models.lora import LoRACompatibleConv, LoRACompatibleLinear
+from diffusers.models.normalization import AdaLayerNorm, AdaLayerNormZero
+from diffusers.utils import (USE_PEFT_BACKEND, BaseOutput, deprecate, is_xformers_available)
+from diffusers.utils.torch_utils import maybe_allow_in_graph
+from torch import nn
 
-from dataclasses import dataclass
+from opensora.models.diffusion.utils.pos_embed import (LinearScalingRoPE1D, LinearScalingRoPE2D, RoPE1D, RoPE2D,
+                                                       get_2d_sincos_pos_embed)
 
-from opensora.models.diffusion.utils.pos_embed import get_2d_sincos_pos_embed, RoPE1D, RoPE2D, LinearScalingRoPE2D, LinearScalingRoPE1D
-
-if is_xformers_available():
-    import xformers
-    import xformers.ops
-else:
-    xformers = None
+try:  # moreh
+    moreh_ops = torch.ops.moreh
+    MorehRMSNorm = moreh_ops.T5LayerNorm
+    ScaledDotProductAttention = moreh_ops.scaled_dot_product_attention
+    MorehFlashAttention = moreh_ops.flash_attention
+except:
+    MorehRMSNorm = None
+    ScaledDotProductAttention = None
+    MorehFlashAttention = None
 
 
 class CombinedTimestepSizeEmbeddings(nn.Module):
@@ -74,14 +79,15 @@ class CombinedTimestepSizeEmbeddings(nn.Module):
 
         if self.use_additional_conditions:
             resolution = self.apply_condition(resolution, batch_size=batch_size, embedder=self.resolution_embedder)
-            aspect_ratio = self.apply_condition(
-                aspect_ratio, batch_size=batch_size, embedder=self.aspect_ratio_embedder
-            )
+            aspect_ratio = self.apply_condition(aspect_ratio,
+                                                batch_size=batch_size,
+                                                embedder=self.aspect_ratio_embedder)
             conditioning = timesteps_emb + torch.cat([resolution, aspect_ratio], dim=1)
         else:
             conditioning = timesteps_emb
 
         return conditioning
+
 
 class CaptionProjection(nn.Module):
     """
@@ -95,13 +101,14 @@ class CaptionProjection(nn.Module):
         self.linear_1 = nn.Linear(in_features=in_features, out_features=hidden_size, bias=True)
         self.act_1 = nn.GELU(approximate="tanh")
         self.linear_2 = nn.Linear(in_features=hidden_size, out_features=hidden_size, bias=True)
-        self.register_buffer("y_embedding", nn.Parameter(torch.randn(num_tokens, in_features) / in_features**0.5))
+        self.register_buffer("y_embedding", nn.Parameter(torch.randn(num_tokens, in_features) / in_features ** 0.5))
 
     def forward(self, caption, force_drop_ids=None):
         hidden_states = self.linear_1(caption)
         hidden_states = self.act_1(hidden_states)
         hidden_states = self.linear_2(hidden_states)
         return hidden_states
+
 
 class PatchEmbed(nn.Module):
     """2D Image to Patch Embedding"""
@@ -124,9 +131,11 @@ class PatchEmbed(nn.Module):
         self.flatten = flatten
         self.layer_norm = layer_norm
 
-        self.proj = nn.Conv2d(
-            in_channels, embed_dim, kernel_size=(patch_size, patch_size), stride=patch_size, bias=bias
-        )
+        self.proj = nn.Conv2d(in_channels,
+                              embed_dim,
+                              kernel_size=(patch_size, patch_size),
+                              stride=patch_size,
+                              bias=bias)
         if layer_norm:
             self.norm = nn.LayerNorm(embed_dim, elementwise_affine=False, eps=1e-6)
         else:
@@ -139,9 +148,10 @@ class PatchEmbed(nn.Module):
 
         self.base_size = height // patch_size
         self.interpolation_scale = interpolation_scale
-        pos_embed = get_2d_sincos_pos_embed(
-            embed_dim, int(num_patches**0.5), base_size=self.base_size, interpolation_scale=self.interpolation_scale
-        )
+        pos_embed = get_2d_sincos_pos_embed(embed_dim,
+                                            int(num_patches ** 0.5),
+                                            base_size=self.base_size,
+                                            interpolation_scale=self.interpolation_scale)
         self.register_buffer("pos_embed", torch.from_numpy(pos_embed).float().unsqueeze(0), persistent=False)
 
     def forward(self, latent):
@@ -246,8 +256,8 @@ class Attention(nn.Module):
         processor: Optional["AttnProcessor"] = None,
         attention_mode: str = 'xformers',
         use_rope: bool = False,
-        rope_scaling: Optional[Dict] = None, 
-        compress_kv_factor: Optional[Tuple] = None, 
+        rope_scaling: Optional[Dict] = None,
+        compress_kv_factor: Optional[Tuple] = None,
     ):
         super().__init__()
         self.inner_dim = dim_head * heads
@@ -266,7 +276,7 @@ class Attention(nn.Module):
         self._from_deprecated_attn_block = _from_deprecated_attn_block
 
         self.scale_qk = scale_qk
-        self.scale = dim_head**-0.5 if self.scale_qk else 1.0
+        self.scale = dim_head ** -0.5 if self.scale_qk else 1.0
 
         self.heads = heads
         # for slice_size > 0 the attention score computation
@@ -307,20 +317,21 @@ class Attention(nn.Module):
             else:
                 norm_cross_num_channels = self.cross_attention_dim
 
-            self.norm_cross = nn.GroupNorm(
-                num_channels=norm_cross_num_channels, num_groups=cross_attention_norm_num_groups, eps=1e-5, affine=True
-            )
+            self.norm_cross = nn.GroupNorm(num_channels=norm_cross_num_channels,
+                                           num_groups=cross_attention_norm_num_groups,
+                                           eps=1e-5,
+                                           affine=True)
         else:
             raise ValueError(
-                f"unknown cross_attention_norm: {cross_attention_norm}. Should be None, 'layer_norm' or 'group_norm'"
-            )
+                f"unknown cross_attention_norm: {cross_attention_norm}. Should be None, 'layer_norm' or 'group_norm'")
 
         if USE_PEFT_BACKEND:
             linear_cls = nn.Linear
         else:
             linear_cls = LoRACompatibleLinear
 
-        assert not (self.use_rope and (self.compress_kv_factor is not None)), "Can not both enable compressing kv and using rope"
+        assert not (self.use_rope and
+                    (self.compress_kv_factor is not None)), "Can not both enable compressing kv and using rope"
         if self.compress_kv_factor is not None:
             self._init_compress()
 
@@ -342,19 +353,26 @@ class Attention(nn.Module):
         self.to_out.append(linear_cls(self.inner_dim, query_dim, bias=out_bias))
         self.to_out.append(nn.Dropout(dropout))
 
-        # set attention processor
-        # We use the AttnProcessor2_0 by default when torch 2.x is used which uses
-        # torch.nn.functional.scaled_dot_product_attention for native Flash/memory_efficient_attention
-        # but only if it has the default `scale` argument. TODO remove scale_qk check when we move to torch 2.1
         if processor is None:
-            processor = (
-                AttnProcessor2_0(self.inner_dim, attention_mode, use_rope, rope_scaling=rope_scaling, compress_kv_factor=compress_kv_factor) if hasattr(F, "scaled_dot_product_attention") and self.scale_qk else AttnProcessor()
-            )
+            processor = (AttnProcessor2_0(self.inner_dim,
+                                          attention_mode,
+                                          use_rope,
+                                          rope_scaling=rope_scaling,
+                                          compress_kv_factor=compress_kv_factor)
+                         if hasattr(F, "scaled_dot_product_attention") and self.scale_qk else AttnProcessor())
+        elif processor == 'moreh_attention':
+            processor = MorehAttnProcessor(self,
+                                           self.inner_dim,
+                                           use_rope,
+                                           rope_scaling=rope_scaling,
+                                           compress_kv_factor=compress_kv_factor)
+        else:
+            raise NotImplementedError(f"attention processor '{processor}' is not supported.")
         self.set_processor(processor)
 
-    def set_use_memory_efficient_attention_xformers(
-        self, use_memory_efficient_attention_xformers: bool, attention_op: Optional[Callable] = None
-    ) -> None:
+    def set_use_memory_efficient_attention_xformers(self,
+                                                    use_memory_efficient_attention_xformers: bool,
+                                                    attention_op: Optional[Callable] = None) -> None:
         r"""
         Set whether to use memory efficient attention from `xformers` or not.
 
@@ -384,105 +402,35 @@ class Attention(nn.Module):
             ),
         )
 
-        if use_memory_efficient_attention_xformers:
-            if is_added_kv_processor and (is_lora or is_custom_diffusion):
-                raise NotImplementedError(
-                    f"Memory efficient attention is currently not supported for LoRA or custom diffusion for attention processor type {self.processor}"
-                )
-            if not is_xformers_available():
-                raise ModuleNotFoundError(
-                    (
-                        "Refer to https://github.com/facebookresearch/xformers for more information on how to install"
-                        " xformers"
-                    ),
-                    name="xformers",
-                )
-            elif not torch.cuda.is_available():
-                raise ValueError(
-                    "torch.cuda.is_available() should be True but is False. xformers' memory efficient attention is"
-                    " only available for GPU "
-                )
-            else:
-                try:
-                    # Make sure we can run the memory efficient attention
-                    _ = xformers.ops.memory_efficient_attention(
-                        torch.randn((1, 2, 40), device="cuda"),
-                        torch.randn((1, 2, 40), device="cuda"),
-                        torch.randn((1, 2, 40), device="cuda"),
-                    )
-                except Exception as e:
-                    raise e
-
-            if is_lora:
-                # TODO (sayakpaul): should we throw a warning if someone wants to use the xformers
-                # variant when using PT 2.0 now that we have LoRAAttnProcessor2_0?
-                processor = LoRAXFormersAttnProcessor(
-                    hidden_size=self.processor.hidden_size,
-                    cross_attention_dim=self.processor.cross_attention_dim,
-                    rank=self.processor.rank,
-                    attention_op=attention_op,
-                )
-                processor.load_state_dict(self.processor.state_dict())
-                processor.to(self.processor.to_q_lora.up.weight.device)
-            elif is_custom_diffusion:
-                processor = CustomDiffusionXFormersAttnProcessor(
-                    train_kv=self.processor.train_kv,
-                    train_q_out=self.processor.train_q_out,
-                    hidden_size=self.processor.hidden_size,
-                    cross_attention_dim=self.processor.cross_attention_dim,
-                    attention_op=attention_op,
-                )
-                processor.load_state_dict(self.processor.state_dict())
-                if hasattr(self.processor, "to_k_custom_diffusion"):
-                    processor.to(self.processor.to_k_custom_diffusion.weight.device)
-            elif is_added_kv_processor:
-                # TODO(Patrick, Suraj, William) - currently xformers doesn't work for UnCLIP
-                # which uses this type of cross attention ONLY because the attention mask of format
-                # [0, ..., -10.000, ..., 0, ...,] is not supported
-                # throw warning
-                logger.info(
-                    "Memory efficient attention with `xformers` might currently not work correctly if an attention mask is required for the attention operation."
-                )
-                processor = XFormersAttnAddedKVProcessor(attention_op=attention_op)
-            else:
-                processor = XFormersAttnProcessor(attention_op=attention_op)
+        if is_lora:
+            attn_processor_class = (LoRAAttnProcessor2_0
+                                    if hasattr(F, "scaled_dot_product_attention") else LoRAAttnProcessor)
+            processor = attn_processor_class(
+                hidden_size=self.processor.hidden_size,
+                cross_attention_dim=self.processor.cross_attention_dim,
+                rank=self.processor.rank,
+            )
+            processor.load_state_dict(self.processor.state_dict())
+            processor.to(self.processor.to_q_lora.up.weight.device)
+        elif is_custom_diffusion:
+            attn_processor_class = (CustomDiffusionAttnProcessor2_0
+                                    if hasattr(F, "scaled_dot_product_attention") else CustomDiffusionAttnProcessor)
+            processor = attn_processor_class(
+                train_kv=self.processor.train_kv,
+                train_q_out=self.processor.train_q_out,
+                hidden_size=self.processor.hidden_size,
+                cross_attention_dim=self.processor.cross_attention_dim,
+            )
+            processor.load_state_dict(self.processor.state_dict())
+            if hasattr(self.processor, "to_k_custom_diffusion"):
+                processor.to(self.processor.to_k_custom_diffusion.weight.device)
         else:
-            if is_lora:
-                attn_processor_class = (
-                    LoRAAttnProcessor2_0 if hasattr(F, "scaled_dot_product_attention") else LoRAAttnProcessor
-                )
-                processor = attn_processor_class(
-                    hidden_size=self.processor.hidden_size,
-                    cross_attention_dim=self.processor.cross_attention_dim,
-                    rank=self.processor.rank,
-                )
-                processor.load_state_dict(self.processor.state_dict())
-                processor.to(self.processor.to_q_lora.up.weight.device)
-            elif is_custom_diffusion:
-                attn_processor_class = (
-                    CustomDiffusionAttnProcessor2_0
-                    if hasattr(F, "scaled_dot_product_attention")
-                    else CustomDiffusionAttnProcessor
-                )
-                processor = attn_processor_class(
-                    train_kv=self.processor.train_kv,
-                    train_q_out=self.processor.train_q_out,
-                    hidden_size=self.processor.hidden_size,
-                    cross_attention_dim=self.processor.cross_attention_dim,
-                )
-                processor.load_state_dict(self.processor.state_dict())
-                if hasattr(self.processor, "to_k_custom_diffusion"):
-                    processor.to(self.processor.to_k_custom_diffusion.weight.device)
-            else:
-                # set attention processor
-                # We use the AttnProcessor2_0 by default when torch 2.x is used which uses
-                # torch.nn.functional.scaled_dot_product_attention for native Flash/memory_efficient_attention
-                # but only if it has the default `scale` argument. TODO remove scale_qk check when we move to torch 2.1
-                processor = (
-                    AttnProcessor2_0()
-                    if hasattr(F, "scaled_dot_product_attention") and self.scale_qk
-                    else AttnProcessor()
-                )
+            # set attention processor
+            # We use the AttnProcessor2_0 by default when torch 2.x is used which uses
+            # torch.nn.functional.scaled_dot_product_attention for native Flash/memory_efficient_attention
+            # but only if it has the default `scale` argument. TODO remove scale_qk check when we move to torch 2.1
+            processor = (AttnProcessor2_0()
+                         if hasattr(F, "scaled_dot_product_attention") and self.scale_qk else AttnProcessor())
 
         self.set_processor(processor)
 
@@ -508,9 +456,8 @@ class Attention(nn.Module):
             # We use the AttnProcessor2_0 by default when torch 2.x is used which uses
             # torch.nn.functional.scaled_dot_product_attention for native Flash/memory_efficient_attention
             # but only if it has the default `scale` argument. TODO remove scale_qk check when we move to torch 2.1
-            processor = (
-                AttnProcessor2_0() if hasattr(F, "scaled_dot_product_attention") and self.scale_qk else AttnProcessor()
-            )
+            processor = (AttnProcessor2_0()
+                         if hasattr(F, "scaled_dot_product_attention") and self.scale_qk else AttnProcessor())
 
         self.set_processor(processor)
 
@@ -539,17 +486,14 @@ class Attention(nn.Module):
 
         # if current processor is in `self._modules` and if passed `processor` is not, we need to
         # pop `processor` from `self._modules`
-        if (
-            hasattr(self, "processor")
-            and isinstance(self.processor, torch.nn.Module)
-            and not isinstance(processor, torch.nn.Module)
-        ):
+        if (hasattr(self, "processor") and isinstance(self.processor, torch.nn.Module)
+                and not isinstance(processor, torch.nn.Module)):
             logger.info(f"You are removing possibly trained weights of {self.processor} with {processor}")
             self._modules.pop("processor")
 
         self.processor = processor
 
-    def get_processor(self, return_deprecated_lora: bool = False) -> "AttentionProcessor":
+    def get_processor(self, return_deprecated_lora: bool = False):
         r"""
         Get the attention processor in use.
 
@@ -568,8 +512,7 @@ class Attention(nn.Module):
         # with PEFT is completed.
         is_lora_activated = {
             name: module.lora_layer is not None
-            for name, module in self.named_modules()
-            if hasattr(module, "lora_layer")
+            for name, module in self.named_modules() if hasattr(module, "lora_layer")
         }
 
         # 1. if no layer has a LoRA activated we can return the processor as usual
@@ -582,8 +525,7 @@ class Attention(nn.Module):
         # 2. else it is not posssible that only some layers have LoRA activated
         if not all(is_lora_activated.values()):
             raise ValueError(
-                f"Make sure that either all layers or no layers have LoRA activated, but have {is_lora_activated}"
-            )
+                f"Make sure that either all layers or no layers have LoRA activated, but have {is_lora_activated}")
 
         # 3. And we need to merge the current LoRA layers into the corresponding LoRA attention processor
         non_lora_processor_cls_name = self.processor.__class__.__name__
@@ -713,9 +655,10 @@ class Attention(nn.Module):
 
         return tensor
 
-    def get_attention_scores(
-        self, query: torch.Tensor, key: torch.Tensor, attention_mask: torch.Tensor = None
-    ) -> torch.Tensor:
+    def get_attention_scores(self,
+                             query: torch.Tensor,
+                             key: torch.Tensor,
+                             attention_mask: torch.Tensor = None) -> torch.Tensor:
         r"""
         Compute the attention scores.
 
@@ -733,9 +676,11 @@ class Attention(nn.Module):
             key = key.float()
 
         if attention_mask is None:
-            baddbmm_input = torch.empty(
-                query.shape[0], query.shape[1], key.shape[1], dtype=query.dtype, device=query.device
-            )
+            baddbmm_input = torch.empty(query.shape[0],
+                                        query.shape[1],
+                                        key.shape[1],
+                                        dtype=query.dtype,
+                                        device=query.device)
             beta = 0
         else:
             baddbmm_input = attention_mask
@@ -760,9 +705,11 @@ class Attention(nn.Module):
 
         return attention_probs
 
-    def prepare_attention_mask(
-        self, attention_mask: torch.Tensor, target_length: int, batch_size: int, out_dim: int = 3
-    ) -> torch.Tensor:
+    def prepare_attention_mask(self,
+                               attention_mask: torch.Tensor,
+                               target_length: int,
+                               batch_size: int,
+                               out_dim: int = 3) -> torch.Tensor:
         r"""
         Prepare the attention mask for the attention computation.
 
@@ -838,14 +785,173 @@ class Attention(nn.Module):
 
     def _init_compress(self):
         if len(self.compress_kv_factor) == 2:
-            self.sr = nn.Conv2d(self.inner_dim, self.inner_dim, groups=self.inner_dim, kernel_size=self.compress_kv_factor, stride=self.compress_kv_factor)
-            self.sr.weight.data.fill_(1/self.compress_kv_factor[0]**2)
+            self.sr = nn.Conv2d(self.inner_dim,
+                                self.inner_dim,
+                                groups=self.inner_dim,
+                                kernel_size=self.compress_kv_factor,
+                                stride=self.compress_kv_factor)
+            self.sr.weight.data.fill_(1 / self.compress_kv_factor[0] ** 2)
         elif len(self.compress_kv_factor) == 1:
             self.kernel_size = self.compress_kv_factor[0]
-            self.sr = nn.Conv1d(self.inner_dim, self.inner_dim, groups=self.inner_dim, kernel_size=self.compress_kv_factor[0], stride=self.compress_kv_factor[0])
-            self.sr.weight.data.fill_(1/self.compress_kv_factor[0])
+            self.sr = nn.Conv1d(self.inner_dim,
+                                self.inner_dim,
+                                groups=self.inner_dim,
+                                kernel_size=self.compress_kv_factor[0],
+                                stride=self.compress_kv_factor[0])
+            self.sr.weight.data.fill_(1 / self.compress_kv_factor[0])
         self.sr.bias.data.zero_()
         self.norm = nn.LayerNorm(self.inner_dim)
+
+
+class MorehAttnProcessor:
+    r"""
+    Processor for implementing scaled dot-product attention (enabled by default if you're using PyTorch 2.0).
+    """
+
+    def __init__(self, attn_module, dim=1152, use_rope=False, rope_scaling=None, compress_kv_factor=None):
+        self.attn_module = attn_module
+        self.dim = dim
+        self.use_rope = use_rope
+        self.rope_scaling = rope_scaling
+        self.compress_kv_factor = compress_kv_factor
+        if self.use_rope:
+            self._init_rope()
+
+    def _init_rope(self):
+        if self.rope_scaling is None:
+            self.rope2d = RoPE2D()
+            self.rope1d = RoPE1D()
+        else:
+            scaling_type = self.rope_scaling["type"]
+            scaling_factor_2d = self.rope_scaling["factor_2d"]
+            scaling_factor_1d = self.rope_scaling["factor_1d"]
+            if scaling_type == "linear":
+                self.rope2d = LinearScalingRoPE2D(scaling_factor=scaling_factor_2d)
+                self.rope1d = LinearScalingRoPE1D(scaling_factor=scaling_factor_1d)
+            else:
+                raise ValueError(f"Unknown RoPE scaling type {scaling_type}")
+
+    def __call__(
+        self,
+        attn: Attention,
+        hidden_states: torch.FloatTensor,
+        encoder_hidden_states: Optional[torch.FloatTensor] = None,
+        attention_mask: Optional[torch.FloatTensor] = None,
+        temb: Optional[torch.FloatTensor] = None,
+        scale: float = 1.0,
+        position_q: Optional[torch.LongTensor] = None,
+        position_k: Optional[torch.LongTensor] = None,
+        last_shape: Tuple[int] = None,
+    ) -> torch.FloatTensor:
+        residual = hidden_states
+
+        args = () if USE_PEFT_BACKEND else (scale, )
+
+        if attn.spatial_norm is not None:
+            hidden_states = attn.spatial_norm(hidden_states, temb)
+
+        input_ndim = hidden_states.ndim
+
+        if input_ndim == 4:
+            batch_size, channel, height, width = hidden_states.shape
+            hidden_states = hidden_states.view(batch_size, channel, height * width).transpose(1, 2)
+
+        if self.compress_kv_factor is not None:
+            batch_size = hidden_states.shape[0]
+            if len(last_shape) == 2:
+                encoder_hidden_states = hidden_states.permute(0, 2, 1).reshape(batch_size, self.dim, *last_shape)
+                encoder_hidden_states = attn.sr(encoder_hidden_states).reshape(batch_size, self.dim,
+                                                                               -1).permute(0, 2, 1)
+            elif len(last_shape) == 1:
+                encoder_hidden_states = hidden_states.permute(0, 2, 1)
+                if last_shape[0] % 2 == 1:
+                    first_frame_pad = encoder_hidden_states[:, :, :1].repeat((1, 1, attn.kernel_size - 1))
+                    encoder_hidden_states = torch.concatenate((first_frame_pad, encoder_hidden_states), dim=2)
+                encoder_hidden_states = attn.sr(encoder_hidden_states).permute(0, 2, 1)
+            else:
+                raise NotImplementedError(f'NotImplementedError with last_shape {last_shape}')
+
+            encoder_hidden_states = attn.norm(encoder_hidden_states)
+
+        batch_size, sequence_length, _ = (hidden_states.shape
+                                          if encoder_hidden_states is None else encoder_hidden_states.shape)
+
+        if attention_mask is not None:
+            attention_mask = attn.prepare_attention_mask(attention_mask, sequence_length, batch_size)
+            # scaled_dot_product_attention expects attention_mask shape to be
+            # (batch, heads, source_length, target_length)
+            attention_mask = attention_mask.view(batch_size, attn.heads, -1, attention_mask.shape[-1])
+
+        if attn.group_norm is not None:
+            hidden_states = attn.group_norm(hidden_states.transpose(1, 2)).transpose(1, 2)
+
+        args = () if USE_PEFT_BACKEND else (scale, )
+        query = attn.to_q(hidden_states, *args)
+
+        if encoder_hidden_states is None:
+            encoder_hidden_states = hidden_states
+        elif attn.norm_cross:
+            encoder_hidden_states = attn.norm_encoder_hidden_states(encoder_hidden_states)
+
+        key = attn.to_k(encoder_hidden_states, *args)
+        value = attn.to_v(encoder_hidden_states, *args)
+
+        inner_dim = key.shape[-1]
+        head_dim = inner_dim // attn.heads
+
+        query = query.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)  # [B, L, H, D_h]
+        key = key.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)  # [B, L, H, D_h]
+        value = value.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)  # [B, L, H, D_h]
+
+        if self.use_rope:
+            # require the shape of (batch_size x nheads x ntokens x dim)
+            if position_q.ndim == 3:
+                query = self.rope2d(query, position_q)
+            elif position_q.ndim == 2:
+                query = self.rope1d(query, position_q)
+            else:
+                raise NotImplementedError
+            if position_k.ndim == 3:
+                key = self.rope2d(key, position_k)
+            elif position_k.ndim == 2:
+                key = self.rope1d(key, position_k)
+            else:
+                raise NotImplementedError
+
+        q_len = query.size(-2)
+        k_len = key.size(-2)
+        masked_bias = torch.zeros((batch_size, attn.heads, query.size(-2), key.size(-2)), device='cuda')
+        hidden_size = attn.heads * head_dim
+        query = query.transpose(1, 2).reshape(batch_size, q_len, hidden_size).contiguous()
+        key = key.transpose(1, 2).reshape(batch_size, k_len, hidden_size).contiguous()
+        value = value.transpose(1, 2).reshape(batch_size, k_len, hidden_size).contiguous()
+        scale_factor = 1.0 / float(head_dim) ** 0.5
+        hidden_states = ScaledDotProductAttention(query,
+                                                  key,
+                                                  value,
+                                                  masked_bias,
+                                                  dropout_rate=0.0,
+                                                  training=self.attn_module.training,
+                                                  attn_weight_scale_factor=scale_factor,
+                                                  num_kv_groups=1)
+        hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, attn.heads * head_dim)
+        hidden_states = hidden_states.to(query.dtype)
+
+        # linear proj
+        hidden_states = attn.to_out[0](hidden_states, *args)
+        # dropout
+        hidden_states = attn.to_out[1](hidden_states)
+
+        if input_ndim == 4:
+            hidden_states = hidden_states.transpose(-1, -2).reshape(batch_size, channel, height, width)
+
+        if attn.residual_connection:
+            hidden_states = hidden_states + residual
+
+        hidden_states = hidden_states / attn.rescale_output_factor
+
+        return hidden_states
+
 
 class AttnProcessor2_0:
     r"""
@@ -863,7 +969,6 @@ class AttnProcessor2_0:
 
         if not hasattr(F, "scaled_dot_product_attention"):
             raise ImportError("AttnProcessor2_0 requires PyTorch 2.0, to use it, please upgrade PyTorch to 2.0.")
-        
 
     def _init_rope(self):
         if self.rope_scaling is None:
@@ -878,7 +983,7 @@ class AttnProcessor2_0:
                 self.rope1d = LinearScalingRoPE1D(scaling_factor=scaling_factor_1d)
             else:
                 raise ValueError(f"Unknown RoPE scaling type {scaling_type}")
-            
+
     def __call__(
         self,
         attn: Attention,
@@ -889,11 +994,11 @@ class AttnProcessor2_0:
         scale: float = 1.0,
         position_q: Optional[torch.LongTensor] = None,
         position_k: Optional[torch.LongTensor] = None,
-        last_shape: Tuple[int] = None, 
+        last_shape: Tuple[int] = None,
     ) -> torch.FloatTensor:
         residual = hidden_states
 
-        args = () if USE_PEFT_BACKEND else (scale,)
+        args = () if USE_PEFT_BACKEND else (scale, )
 
         if attn.spatial_norm is not None:
             hidden_states = attn.spatial_norm(hidden_states, temb)
@@ -904,13 +1009,12 @@ class AttnProcessor2_0:
             batch_size, channel, height, width = hidden_states.shape
             hidden_states = hidden_states.view(batch_size, channel, height * width).transpose(1, 2)
 
-
-
         if self.compress_kv_factor is not None:
             batch_size = hidden_states.shape[0]
             if len(last_shape) == 2:
                 encoder_hidden_states = hidden_states.permute(0, 2, 1).reshape(batch_size, self.dim, *last_shape)
-                encoder_hidden_states = attn.sr(encoder_hidden_states).reshape(batch_size, self.dim, -1).permute(0, 2, 1)
+                encoder_hidden_states = attn.sr(encoder_hidden_states).reshape(batch_size, self.dim,
+                                                                               -1).permute(0, 2, 1)
             elif len(last_shape) == 1:
                 encoder_hidden_states = hidden_states.permute(0, 2, 1)
                 if last_shape[0] % 2 == 1:
@@ -919,12 +1023,11 @@ class AttnProcessor2_0:
                 encoder_hidden_states = attn.sr(encoder_hidden_states).permute(0, 2, 1)
             else:
                 raise NotImplementedError(f'NotImplementedError with last_shape {last_shape}')
-                
+
             encoder_hidden_states = attn.norm(encoder_hidden_states)
 
-        batch_size, sequence_length, _ = (
-            hidden_states.shape if encoder_hidden_states is None else encoder_hidden_states.shape
-        )
+        batch_size, sequence_length, _ = (hidden_states.shape
+                                          if encoder_hidden_states is None else encoder_hidden_states.shape)
 
         if attention_mask is not None:
             attention_mask = attn.prepare_attention_mask(attention_mask, sequence_length, batch_size)
@@ -935,15 +1038,13 @@ class AttnProcessor2_0:
         if attn.group_norm is not None:
             hidden_states = attn.group_norm(hidden_states.transpose(1, 2)).transpose(1, 2)
 
-        args = () if USE_PEFT_BACKEND else (scale,)
+        args = () if USE_PEFT_BACKEND else (scale, )
         query = attn.to_q(hidden_states, *args)
 
         if encoder_hidden_states is None:
             encoder_hidden_states = hidden_states
         elif attn.norm_cross:
             encoder_hidden_states = attn.norm_encoder_hidden_states(encoder_hidden_states)
-
-        
 
         key = attn.to_k(encoder_hidden_states, *args)
         value = attn.to_v(encoder_hidden_states, *args)
@@ -959,9 +1060,9 @@ class AttnProcessor2_0:
         if self.use_rope:
             # require the shape of (batch_size x nheads x ntokens x dim)
             if position_q.ndim == 3:
-                query = self.rope2d(query, position_q) 
+                query = self.rope2d(query, position_q)
             elif position_q.ndim == 2:
-                query = self.rope1d(query, position_q) 
+                query = self.rope1d(query, position_q)
             else:
                 raise NotImplementedError
             if position_k.ndim == 3:
@@ -974,20 +1075,25 @@ class AttnProcessor2_0:
         # the output of sdp = (batch, num_heads, seq_len, head_dim)
         # TODO: add support for attn.scale when we move to Torch 2.1
         if self.attention_mode == 'flash':
-            assert attention_mask is None or torch.all(attention_mask.bool()), 'flash-attn do not support attention_mask'
+            assert attention_mask is None or torch.all(
+                attention_mask.bool()), 'flash-attn do not support attention_mask'
             with torch.backends.cuda.sdp_kernel(enable_math=False, enable_flash=True, enable_mem_efficient=False):
-                hidden_states = F.scaled_dot_product_attention(
-                    query, key, value, dropout_p=0.0, is_causal=False
-                )
+                hidden_states = F.scaled_dot_product_attention(query, key, value, dropout_p=0.0, is_causal=False)
         elif self.attention_mode == 'xformers':
             with torch.backends.cuda.sdp_kernel(enable_math=False, enable_flash=False, enable_mem_efficient=True):
-                hidden_states = F.scaled_dot_product_attention(
-                    query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
-                )
+                hidden_states = F.scaled_dot_product_attention(query,
+                                                               key,
+                                                               value,
+                                                               attn_mask=attention_mask,
+                                                               dropout_p=0.0,
+                                                               is_causal=False)
         elif self.attention_mode == 'math':
-            hidden_states = F.scaled_dot_product_attention(
-                query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
-            )
+            hidden_states = F.scaled_dot_product_attention(query,
+                                                           key,
+                                                           value,
+                                                           attn_mask=attention_mask,
+                                                           dropout_p=0.0,
+                                                           is_causal=False)
         else:
             raise NotImplementedError(f'Found attention_mode: {self.attention_mode}')
         hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, attn.heads * head_dim)
@@ -1007,6 +1113,7 @@ class AttnProcessor2_0:
         hidden_states = hidden_states / attn.rescale_output_factor
 
         return hidden_states
+
 
 @maybe_allow_in_graph
 class GatedSelfAttentionDense(nn.Module):
@@ -1064,13 +1171,13 @@ class FeedForward(nn.Module):
     """
 
     def __init__(
-            self,
-            dim: int,
-            dim_out: Optional[int] = None,
-            mult: int = 4,
-            dropout: float = 0.0,
-            activation_fn: str = "geglu",
-            final_dropout: bool = False,
+        self,
+        dim: int,
+        dim_out: Optional[int] = None,
+        mult: int = 4,
+        dropout: float = 0.0,
+        activation_fn: str = "geglu",
+        final_dropout: bool = False,
     ):
         super().__init__()
         inner_dim = int(dim * mult)
@@ -1098,7 +1205,7 @@ class FeedForward(nn.Module):
             self.net.append(nn.Dropout(dropout))
 
     def forward(self, hidden_states: torch.Tensor, scale: float = 1.0) -> torch.Tensor:
-        compatible_cls = (GEGLU,) if USE_PEFT_BACKEND else (GEGLU, LoRACompatibleLinear)
+        compatible_cls = (GEGLU, ) if USE_PEFT_BACKEND else (GEGLU, LoRACompatibleLinear)
         for module in self.net:
             if isinstance(module, compatible_cls):
                 hidden_states = module(hidden_states, scale)
@@ -1144,29 +1251,29 @@ class BasicTransformerBlock_(nn.Module):
     """
 
     def __init__(
-            self,
-            dim: int,
-            num_attention_heads: int,
-            attention_head_dim: int,
-            dropout=0.0,
-            cross_attention_dim: Optional[int] = None,
-            activation_fn: str = "geglu",
-            num_embeds_ada_norm: Optional[int] = None,
-            attention_bias: bool = False,
-            only_cross_attention: bool = False,
-            double_self_attention: bool = False,
-            upcast_attention: bool = False,
-            norm_elementwise_affine: bool = True,
-            norm_type: str = "layer_norm",  # 'layer_norm', 'ada_norm', 'ada_norm_zero', 'ada_norm_single'
-            norm_eps: float = 1e-5,
-            final_dropout: bool = False,
-            attention_type: str = "default",
-            positional_embeddings: Optional[str] = None,
-            num_positional_embeddings: Optional[int] = None,
-            attention_mode: str = "xformers",
-            use_rope: bool = False, 
-            rope_scaling: Optional[Dict] = None, 
-            compress_kv_factor: Optional[Tuple] = None, 
+        self,
+        dim: int,
+        num_attention_heads: int,
+        attention_head_dim: int,
+        dropout=0.0,
+        cross_attention_dim: Optional[int] = None,
+        activation_fn: str = "geglu",
+        num_embeds_ada_norm: Optional[int] = None,
+        attention_bias: bool = False,
+        only_cross_attention: bool = False,
+        double_self_attention: bool = False,
+        upcast_attention: bool = False,
+        norm_elementwise_affine: bool = True,
+        norm_type: str = "layer_norm",  # 'layer_norm', 'ada_norm', 'ada_norm_zero', 'ada_norm_single'
+        norm_eps: float = 1e-5,
+        final_dropout: bool = False,
+        attention_type: str = "default",
+        positional_embeddings: Optional[str] = None,
+        num_positional_embeddings: Optional[int] = None,
+        attention_mode: str = "xformers",
+        use_rope: bool = False,
+        rope_scaling: Optional[Dict] = None,
+        compress_kv_factor: Optional[Tuple] = None,
     ):
         super().__init__()
         self.only_cross_attention = only_cross_attention
@@ -1179,13 +1286,11 @@ class BasicTransformerBlock_(nn.Module):
         if norm_type in ("ada_norm", "ada_norm_zero") and num_embeds_ada_norm is None:
             raise ValueError(
                 f"`norm_type` is set to {norm_type}, but `num_embeds_ada_norm` is not defined. Please make sure to"
-                f" define `num_embeds_ada_norm` if setting `norm_type` to {norm_type}."
-            )
+                f" define `num_embeds_ada_norm` if setting `norm_type` to {norm_type}.")
 
         if positional_embeddings and (num_positional_embeddings is None):
             raise ValueError(
-                "If `positional_embedding` type is defined, `num_positition_embeddings` must also be defined."
-            )
+                "If `positional_embedding` type is defined, `num_positition_embeddings` must also be defined.")
 
         if positional_embeddings == "sinusoidal":
             self.pos_embed = SinusoidalPositionalEmbedding(dim, max_seq_length=num_positional_embeddings)
@@ -1201,19 +1306,18 @@ class BasicTransformerBlock_(nn.Module):
         else:
             self.norm1 = nn.LayerNorm(dim, elementwise_affine=norm_elementwise_affine, eps=norm_eps)
 
-        self.attn1 = Attention(
-            query_dim=dim,
-            heads=num_attention_heads,
-            dim_head=attention_head_dim,
-            dropout=dropout,
-            bias=attention_bias,
-            cross_attention_dim=cross_attention_dim if only_cross_attention else None,
-            upcast_attention=upcast_attention,
-            attention_mode=attention_mode, 
-            use_rope=use_rope, 
-            rope_scaling=rope_scaling, 
-            compress_kv_factor=compress_kv_factor, 
-        )
+        self.attn1 = Attention(query_dim=dim,
+                               heads=num_attention_heads,
+                               dim_head=attention_head_dim,
+                               dropout=dropout,
+                               bias=attention_bias,
+                               cross_attention_dim=cross_attention_dim if only_cross_attention else None,
+                               upcast_attention=upcast_attention,
+                               attention_mode=attention_mode,
+                               use_rope=use_rope,
+                               rope_scaling=rope_scaling,
+                               compress_kv_factor=compress_kv_factor,
+                               processor='moreh_attention')
 
         # # 2. Cross-Attn
         # if cross_attention_dim is not None or double_self_attention:
@@ -1263,17 +1367,17 @@ class BasicTransformerBlock_(nn.Module):
         self._chunk_dim = dim
 
     def forward(
-            self,
-            hidden_states: torch.FloatTensor,
-            attention_mask: Optional[torch.FloatTensor] = None,
-            encoder_hidden_states: Optional[torch.FloatTensor] = None,
-            encoder_attention_mask: Optional[torch.FloatTensor] = None,
-            timestep: Optional[torch.LongTensor] = None,
-            cross_attention_kwargs: Dict[str, Any] = None,
-            class_labels: Optional[torch.LongTensor] = None,
-            position_q: Optional[torch.LongTensor] = None,
-            position_k: Optional[torch.LongTensor] = None,
-            frame: int = None, 
+        self,
+        hidden_states: torch.FloatTensor,
+        attention_mask: Optional[torch.FloatTensor] = None,
+        encoder_hidden_states: Optional[torch.FloatTensor] = None,
+        encoder_attention_mask: Optional[torch.FloatTensor] = None,
+        timestep: Optional[torch.LongTensor] = None,
+        cross_attention_kwargs: Dict[str, Any] = None,
+        class_labels: Optional[torch.LongTensor] = None,
+        position_q: Optional[torch.LongTensor] = None,
+        position_k: Optional[torch.LongTensor] = None,
+        frame: int = None,
     ) -> torch.FloatTensor:
         # Notice that normalization is always applied before the real computation in the following blocks.
         # 0. Self-Attention
@@ -1282,15 +1386,15 @@ class BasicTransformerBlock_(nn.Module):
         if self.use_ada_layer_norm:
             norm_hidden_states = self.norm1(hidden_states, timestep)
         elif self.use_ada_layer_norm_zero:
-            norm_hidden_states, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.norm1(
-                hidden_states, timestep, class_labels, hidden_dtype=hidden_states.dtype
-            )
+            norm_hidden_states, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.norm1(hidden_states,
+                                                                                      timestep,
+                                                                                      class_labels,
+                                                                                      hidden_dtype=hidden_states.dtype)
         elif self.use_layer_norm:
             norm_hidden_states = self.norm1(hidden_states)
         elif self.use_ada_layer_norm_single:
             shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
-                    self.scale_shift_table[None] + timestep.reshape(batch_size, 6, -1)
-            ).chunk(6, dim=1)
+                self.scale_shift_table[None] + timestep.reshape(batch_size, 6, -1)).chunk(6, dim=1)
             norm_hidden_states = self.norm1(hidden_states)
             norm_hidden_states = norm_hidden_states * (1 + scale_msa) + shift_msa
             norm_hidden_states = norm_hidden_states.squeeze(1)
@@ -1312,8 +1416,8 @@ class BasicTransformerBlock_(nn.Module):
             encoder_hidden_states=encoder_hidden_states if self.only_cross_attention else None,
             attention_mask=attention_mask,
             position_q=position_q,
-            position_k=position_k, 
-            last_shape=frame, 
+            position_k=position_k,
+            last_shape=frame,
             **cross_attention_kwargs,
         )
         if self.use_ada_layer_norm_zero:
@@ -1451,10 +1555,10 @@ class BasicTransformerBlock(nn.Module):
         attention_type: str = "default",
         positional_embeddings: Optional[str] = None,
         num_positional_embeddings: Optional[int] = None,
-        attention_mode: str = "xformers", 
+        attention_mode: str = "xformers",
         use_rope: bool = False,
         rope_scaling: Optional[Dict] = None,
-        compress_kv_factor: Optional[Tuple] = None, 
+        compress_kv_factor: Optional[Tuple] = None,
     ):
         super().__init__()
         self.only_cross_attention = only_cross_attention
@@ -1467,13 +1571,11 @@ class BasicTransformerBlock(nn.Module):
         if norm_type in ("ada_norm", "ada_norm_zero") and num_embeds_ada_norm is None:
             raise ValueError(
                 f"`norm_type` is set to {norm_type}, but `num_embeds_ada_norm` is not defined. Please make sure to"
-                f" define `num_embeds_ada_norm` if setting `norm_type` to {norm_type}."
-            )
+                f" define `num_embeds_ada_norm` if setting `norm_type` to {norm_type}.")
 
         if positional_embeddings and (num_positional_embeddings is None):
             raise ValueError(
-                "If `positional_embedding` type is defined, `num_positition_embeddings` must also be defined."
-            )
+                "If `positional_embedding` type is defined, `num_positition_embeddings` must also be defined.")
 
         if positional_embeddings == "sinusoidal":
             self.pos_embed = SinusoidalPositionalEmbedding(dim, max_seq_length=num_positional_embeddings)
@@ -1497,10 +1599,11 @@ class BasicTransformerBlock(nn.Module):
             bias=attention_bias,
             cross_attention_dim=cross_attention_dim if only_cross_attention else None,
             upcast_attention=upcast_attention,
-            attention_mode=attention_mode, 
-            use_rope=use_rope, 
-            rope_scaling=rope_scaling, 
-            compress_kv_factor=compress_kv_factor, 
+            attention_mode=attention_mode,
+            use_rope=use_rope,
+            rope_scaling=rope_scaling,
+            compress_kv_factor=compress_kv_factor,
+            processor="moreh_attention",
         )
 
         # 2. Cross-Attn
@@ -1508,11 +1611,8 @@ class BasicTransformerBlock(nn.Module):
             # We currently only use AdaLayerNormZero for self attention where there will only be one attention block.
             # I.e. the number of returned modulation chunks from AdaLayerZero would not make sense if returned during
             # the second cross attention block.
-            self.norm2 = (
-                AdaLayerNorm(dim, num_embeds_ada_norm)
-                if self.use_ada_layer_norm
-                else nn.LayerNorm(dim, elementwise_affine=norm_elementwise_affine, eps=norm_eps)
-            )
+            self.norm2 = (AdaLayerNorm(dim, num_embeds_ada_norm) if self.use_ada_layer_norm else nn.LayerNorm(
+                dim, elementwise_affine=norm_elementwise_affine, eps=norm_eps))
             self.attn2 = Attention(
                 query_dim=dim,
                 cross_attention_dim=cross_attention_dim if not double_self_attention else None,
@@ -1523,7 +1623,8 @@ class BasicTransformerBlock(nn.Module):
                 upcast_attention=upcast_attention,
                 attention_mode=attention_mode,  # only xformers support attention_mask
                 use_rope=False,  # do not position in cross attention
-                compress_kv_factor=None, 
+                compress_kv_factor=None,
+                processor="moreh_attention",
             )  # is self-attn if encoder_hidden_states is none
         else:
             self.norm2 = None
@@ -1546,7 +1647,7 @@ class BasicTransformerBlock(nn.Module):
 
         # 5. Scale-shift for PixArt-Alpha.
         if self.use_ada_layer_norm_single:
-            self.scale_shift_table = nn.Parameter(torch.randn(6, dim) / dim**0.5)
+            self.scale_shift_table = nn.Parameter(torch.randn(6, dim) / dim ** 0.5)
 
         # let chunk size default to None
         self._chunk_size = None
@@ -1568,7 +1669,7 @@ class BasicTransformerBlock(nn.Module):
         class_labels: Optional[torch.LongTensor] = None,
         position_q: Optional[torch.LongTensor] = None,
         position_k: Optional[torch.LongTensor] = None,
-        hw: Tuple[int, int] = None, 
+        hw: Tuple[int, int] = None,
     ) -> torch.FloatTensor:
         # Notice that normalization is always applied before the real computation in the following blocks.
         # 0. Self-Attention
@@ -1577,15 +1678,15 @@ class BasicTransformerBlock(nn.Module):
         if self.use_ada_layer_norm:
             norm_hidden_states = self.norm1(hidden_states, timestep)
         elif self.use_ada_layer_norm_zero:
-            norm_hidden_states, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.norm1(
-                hidden_states, timestep, class_labels, hidden_dtype=hidden_states.dtype
-            )
+            norm_hidden_states, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.norm1(hidden_states,
+                                                                                      timestep,
+                                                                                      class_labels,
+                                                                                      hidden_dtype=hidden_states.dtype)
         elif self.use_layer_norm:
             norm_hidden_states = self.norm1(hidden_states)
         elif self.use_ada_layer_norm_single:
             shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
-                self.scale_shift_table[None] + timestep.reshape(batch_size, 6, -1)
-            ).chunk(6, dim=1)
+                self.scale_shift_table[None] + timestep.reshape(batch_size, 6, -1)).chunk(6, dim=1)
             norm_hidden_states = self.norm1(hidden_states)
             norm_hidden_states = norm_hidden_states * (1 + scale_msa) + shift_msa
             norm_hidden_states = norm_hidden_states.squeeze(1)
@@ -1608,7 +1709,7 @@ class BasicTransformerBlock(nn.Module):
             attention_mask=attention_mask,
             position_q=position_q,
             position_k=position_k,
-            last_shape=hw, 
+            last_shape=hw,
             **cross_attention_kwargs,
         )
         if self.use_ada_layer_norm_zero:
@@ -1646,7 +1747,7 @@ class BasicTransformerBlock(nn.Module):
                 attention_mask=encoder_attention_mask,
                 position_q=None,  # cross attn do not need relative position
                 position_k=None,
-                last_shape=None, 
+                last_shape=None,
                 **cross_attention_kwargs,
             )
             hidden_states = attn_output + hidden_states
@@ -1664,9 +1765,11 @@ class BasicTransformerBlock(nn.Module):
 
         if self._chunk_size is not None:
             # "feed_forward_chunk_size" can be used to save memory
-            ff_output = _chunked_feed_forward(
-                self.ff, norm_hidden_states, self._chunk_dim, self._chunk_size, lora_scale=lora_scale
-            )
+            ff_output = _chunked_feed_forward(self.ff,
+                                              norm_hidden_states,
+                                              self._chunk_dim,
+                                              self._chunk_size,
+                                              lora_scale=lora_scale)
         else:
             ff_output = self.ff(norm_hidden_states, scale=lora_scale)
 
@@ -1680,6 +1783,7 @@ class BasicTransformerBlock(nn.Module):
             hidden_states = hidden_states.squeeze(1)
 
         return hidden_states
+
 
 class AdaLayerNormSingle(nn.Module):
     r"""
@@ -1695,22 +1799,25 @@ class AdaLayerNormSingle(nn.Module):
     def __init__(self, embedding_dim: int, use_additional_conditions: bool = False):
         super().__init__()
 
-        self.emb = CombinedTimestepSizeEmbeddings(
-            embedding_dim, size_emb_dim=embedding_dim // 3, use_additional_conditions=use_additional_conditions
-        )
+        self.emb = CombinedTimestepSizeEmbeddings(embedding_dim,
+                                                  size_emb_dim=embedding_dim // 3,
+                                                  use_additional_conditions=use_additional_conditions)
 
         self.silu = nn.SiLU()
         self.linear = nn.Linear(embedding_dim, 6 * embedding_dim, bias=True)
 
     def forward(
-            self,
-            timestep: torch.Tensor,
-            added_cond_kwargs: Dict[str, torch.Tensor] = None,
-            batch_size: int = None,
-            hidden_dtype: Optional[torch.dtype] = None,
+        self,
+        timestep: torch.Tensor,
+        added_cond_kwargs: Dict[str, torch.Tensor] = None,
+        batch_size: int = None,
+        hidden_dtype: Optional[torch.dtype] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         # No modulation happening here.
-        embedded_timestep = self.emb(timestep, batch_size=batch_size, hidden_dtype=hidden_dtype, resolution=None,
+        embedded_timestep = self.emb(timestep,
+                                     batch_size=batch_size,
+                                     hidden_dtype=hidden_dtype,
+                                     resolution=None,
                                      aspect_ratio=None)
         return self.linear(self.silu(embedded_timestep)), embedded_timestep
 
