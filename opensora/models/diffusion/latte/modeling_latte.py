@@ -18,7 +18,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from opensora.models.diffusion.utils.pos_embed import get_1d_sincos_pos_embed, PositionGetter1D, PositionGetter2D
-from opensora.models.diffusion.latte.modules import PatchEmbed, BasicTransformerBlock, BasicTransformerBlock_, AdaLayerNormSingle, \
+from opensora.models.diffusion.latte.modules import PatchEmbed, BasicTransformerBlock, TemporalTransformerBlock, AdaLayerNormSingle, \
     Transformer3DModelOutput, CaptionProjection
 
 
@@ -85,7 +85,10 @@ class LatteT2V(ModelMixin, ConfigMixin):
             model_max_length: int = 300, 
             rope_scaling_type: str = 'linear', 
             compress_kv_factor: int = 1, 
-            interpolation_scale_1d: float = None, 
+            interpolation_scale_1d: float = None,
+            use_moreh_spatial_attention: bool = True,
+            use_moreh_spatial_cross_attention: bool = False,
+            use_moreh_temporal_attention: bool = True 
     ):
         super().__init__()
         self.use_linear_projection = use_linear_projection
@@ -181,6 +184,8 @@ class LatteT2V(ModelMixin, ConfigMixin):
                     use_rope=use_rope, 
                     rope_scaling=rope_scaling, 
                     compress_kv_factor=(compress_kv_factor, compress_kv_factor) if d >= num_layers // 2 and compress_kv_factor != 1 else None, # follow pixart-sigma, apply in second-half layers
+                    use_moreh_attention=use_moreh_spatial_attention,
+                    use_moreh_cross_attention=use_moreh_spatial_cross_attention,
                 )
                 for d in range(num_layers)
             ]
@@ -189,7 +194,7 @@ class LatteT2V(ModelMixin, ConfigMixin):
         # Define temporal transformers blocks
         self.temporal_transformer_blocks = nn.ModuleList(
             [
-                BasicTransformerBlock_(  # one attention
+                TemporalTransformerBlock(  # one attention
                     inner_dim,
                     num_attention_heads,  # num_attention_heads
                     attention_head_dim,  # attention_head_dim 72
@@ -209,6 +214,7 @@ class LatteT2V(ModelMixin, ConfigMixin):
                     use_rope=use_rope, 
                     rope_scaling=rope_scaling, 
                     compress_kv_factor=(compress_kv_factor, ) if d >= num_layers // 2 and compress_kv_factor != 1 else None, # follow pixart-sigma, apply in second-half layers
+                    use_moreh_attention=use_moreh_temporal_attention,
                 )
                 for d in range(num_layers)
             ]
@@ -369,7 +375,7 @@ class LatteT2V(ModelMixin, ConfigMixin):
 
         # Retrieve lora scale.
         lora_scale = cross_attention_kwargs.get("scale", 1.0) if cross_attention_kwargs is not None else 1.0
-
+        
         # 1. Input
         if self.is_input_patches:  # here
             height, width = hidden_states.shape[-2] // self.patch_size, hidden_states.shape[-1] // self.patch_size

@@ -899,9 +899,9 @@ class MorehAttnProcessor:
         inner_dim = key.shape[-1]
         head_dim = inner_dim // attn.heads
 
-        query = query.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)  # [B, L, H, D_h]
-        key = key.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)  # [B, L, H, D_h]
-        value = value.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)  # [B, L, H, D_h]
+        query = query.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)  # [B, H, L, D_h]
+        key = key.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)  # [B, H, L, D_h]
+        value = value.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)  # [B, H, L, D_h]
 
         if self.use_rope:
             # require the shape of (batch_size x nheads x ntokens x dim)
@@ -917,7 +917,7 @@ class MorehAttnProcessor:
                 key = self.rope1d(key, position_k)
             else:
                 raise NotImplementedError
-
+        
         q_len = query.size(-2)
         k_len = key.size(-2)
         masked_bias = torch.zeros((batch_size, attn.heads, query.size(-2), key.size(-2)), device='cuda')
@@ -1215,9 +1215,9 @@ class FeedForward(nn.Module):
 
 
 @maybe_allow_in_graph
-class BasicTransformerBlock_(nn.Module):
+class TemporalTransformerBlock(nn.Module):
     r"""
-    A basic Transformer block.
+    A **TEMPORAL** Transformer block.
 
     Parameters:
         dim (`int`): The number of channels in the input and output.
@@ -1274,6 +1274,7 @@ class BasicTransformerBlock_(nn.Module):
         use_rope: bool = False,
         rope_scaling: Optional[Dict] = None,
         compress_kv_factor: Optional[Tuple] = None,
+        use_moreh_attention: bool = False,
     ):
         super().__init__()
         self.only_cross_attention = only_cross_attention
@@ -1317,30 +1318,10 @@ class BasicTransformerBlock_(nn.Module):
                                use_rope=use_rope,
                                rope_scaling=rope_scaling,
                                compress_kv_factor=compress_kv_factor,
-                               processor='moreh_attention')
+                               processor='moreh_attention' if use_moreh_attention else None)
 
         # # 2. Cross-Attn
-        # if cross_attention_dim is not None or double_self_attention:
-        #     # We currently only use AdaLayerNormZero for self attention where there will only be one attention block.
-        #     # I.e. the number of returned modulation chunks from AdaLayerZero would not make sense if returned during
-        #     # the second cross attention block.
-        #     self.norm2 = (
-        #         AdaLayerNorm(dim, num_embeds_ada_norm)
-        #         if self.use_ada_layer_norm
-        #         else nn.LayerNorm(dim, elementwise_affine=norm_elementwise_affine, eps=norm_eps)
-        #     )
-        #     self.attn2 = Attention(
-        #         query_dim=dim,
-        #         cross_attention_dim=cross_attention_dim if not double_self_attention else None,
-        #         heads=num_attention_heads,
-        #         dim_head=attention_head_dim,
-        #         dropout=dropout,
-        #         bias=attention_bias,
-        #         upcast_attention=upcast_attention,
-        #     )  # is self-attn if encoder_hidden_states is none
-        # else:
-        #     self.norm2 = None
-        #     self.attn2 = None
+        # NOTE: Currently, temporal attention does not have the cross-attention layer.
 
         # 3. Feed-forward
         # if not self.use_ada_layer_norm_single:
@@ -1559,6 +1540,8 @@ class BasicTransformerBlock(nn.Module):
         use_rope: bool = False,
         rope_scaling: Optional[Dict] = None,
         compress_kv_factor: Optional[Tuple] = None,
+        use_moreh_attention: bool = False,
+        use_moreh_cross_attention: bool = True,
     ):
         super().__init__()
         self.only_cross_attention = only_cross_attention
@@ -1603,7 +1586,7 @@ class BasicTransformerBlock(nn.Module):
             use_rope=use_rope,
             rope_scaling=rope_scaling,
             compress_kv_factor=compress_kv_factor,
-            processor="moreh_attention",
+            processor='moreh_attention' if use_moreh_attention else None,
         )
 
         # 2. Cross-Attn
@@ -1624,7 +1607,7 @@ class BasicTransformerBlock(nn.Module):
                 attention_mode=attention_mode,  # only xformers support attention_mask
                 use_rope=False,  # do not position in cross attention
                 compress_kv_factor=None,
-                processor="moreh_attention",
+                processor='moreh_attention' if use_moreh_cross_attention else None,
             )  # is self-attn if encoder_hidden_states is none
         else:
             self.norm2 = None

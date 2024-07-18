@@ -12,7 +12,7 @@ python opensora/train/train_t2v.py \
     --video_data "metadata.txt" \
     --image_data "scripts/train_data/image_data.txt" \
     --sample_rate 1 \
-    --num_frames 32 \
+    --num_frames 16 \
     --max_image_size 512 \
     --gradient_checkpointing \
     --attention_mode xformers \
@@ -24,7 +24,7 @@ python opensora/train/train_t2v.py \
     --lr_scheduler="constant" \
     --lr_warmup_steps=0 \
     --report_to="wandb" \
-    --checkpointing_steps=500 \
+    --checkpointing_steps=1000 \
     --output_dir="65x512x512_10node_bs2_lr2e-5_4img" \
     --allow_tf32 \
     --model_max_length 300 \
