@@ -917,7 +917,7 @@ class MorehAttnProcessor:
                 key = self.rope1d(key, position_k)
             else:
                 raise NotImplementedError
-        
+
         q_len = query.size(-2)
         k_len = key.size(-2)
         masked_bias = torch.zeros((batch_size, attn.heads, query.size(-2), key.size(-2)), device='cuda')
