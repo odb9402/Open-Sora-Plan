@@ -1,7 +1,7 @@
 export HF_HOME="/moai/cache"
 export TRANSFORMERS_CACHE="/moai/cache"
+export PYTHONPATH=$PYTHONPATH:~/Open-Sora-Plan
 
-MOREH_VISIBLE_DEVICE=1 \
 python opensora/train/train_t2v.py \
     --model LatteT2V-XL/122 \
     --text_encoder_name DeepFloyd/t5-v1_1-xxl \
@@ -25,7 +25,7 @@ python opensora/train/train_t2v.py \
     --lr_warmup_steps=0 \
     --report_to="wandb" \
     --checkpointing_steps=1000 \
-    --output_dir="65x512x512_10node_bs2_lr2e-5_4img" \
+    --output_dir="/moai/model/65x512x512_10node_bs2_lr2e-5_4img" \
     --allow_tf32 \
     --model_max_length 300 \
     --use_image_num 4 \

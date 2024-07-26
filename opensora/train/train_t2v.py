@@ -432,7 +432,7 @@ def main(args):
                             shutil.rmtree(removing_checkpoint)
 
                 save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-                os.makedirs(save_path, exist_ok=True)
+                os.makedirs(args.output_dir, exist_ok=True)
 
                 save_state(model, optimizer, epoch, save_path)
                 logger.info(f"Saved state to {save_path}")

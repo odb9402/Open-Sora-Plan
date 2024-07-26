@@ -598,6 +598,18 @@ class LatteT2V(ModelMixin, ConfigMixin):
 
 
 # depth = num_layers * 2
+def LatteT2V_SMALL_122(**kwargs):
+    return LatteT2V(num_layers=14,
+                    attention_head_dim=72,
+                    num_attention_heads=8,
+                    patch_size_t=1,
+                    patch_size=2,
+                    norm_type="ada_norm_single",
+                    caption_channels=4096,
+                    cross_attention_dim=576,
+                    **kwargs)
+
+
 def LatteT2V_XL_122(**kwargs):
     return LatteT2V(num_layers=28,
                     attention_head_dim=72,
@@ -625,6 +637,7 @@ def LatteT2V_D64_XL_122(**kwargs):
 Latte_models = {
     "LatteT2V-XL/122": LatteT2V_XL_122,
     "LatteT2V-D64-XL/122": LatteT2V_D64_XL_122,
+    "LatteT2V-SMALL/122": LatteT2V_SMALL_122,
 }
 
 if __name__ == '__main__':

@@ -933,6 +933,7 @@ class MorehAttnProcessor:
                                                   dropout_rate=0.0,
                                                   training=self.attn_module.training,
                                                   attn_weight_scale_factor=scale_factor,
+                                                  recompute_mode=False,
                                                   num_kv_groups=1)
         hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, attn.heads * head_dim)
         hidden_states = hidden_states.to(query.dtype)
