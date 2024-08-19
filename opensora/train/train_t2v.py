@@ -189,27 +189,28 @@ def main(args):
         video_length = args.num_frames // ae_stride_t
 
     # (Model Init 4) Get the Diffusion body
-    model = Diffusion_models[args.model](
-        in_channels=ae_channel_config[args.ae],
-        out_channels=ae_channel_config[args.ae] * 2,
-        attention_bias=True,
-        sample_size=latent_size,
-        num_vector_embeds=None,
-        activation_fn="gelu-approximate",
-        num_embeds_ada_norm=1000,
-        use_linear_projection=False,
-        only_cross_attention=False,
-        double_self_attention=False,
-        upcast_attention=False,
-        norm_elementwise_affine=False,
-        norm_eps=1e-6,
-        attention_type='default',
-        video_length=video_length,
-        attention_mode=args.attention_mode,
-        compress_kv_factor=args.compress_kv_factor,
-        use_rope=args.use_rope,
-        model_max_length=args.model_max_length,
-    )
+    model = Diffusion_models[args.model](in_channels=ae_channel_config[args.ae],
+                                         out_channels=ae_channel_config[args.ae] * 2,
+                                         attention_bias=True,
+                                         sample_size=latent_size,
+                                         num_vector_embeds=None,
+                                         activation_fn="gelu-approximate",
+                                         num_embeds_ada_norm=1000,
+                                         use_linear_projection=False,
+                                         only_cross_attention=False,
+                                         double_self_attention=False,
+                                         upcast_attention=False,
+                                         norm_elementwise_affine=False,
+                                         norm_eps=1e-6,
+                                         attention_type='default',
+                                         video_length=video_length,
+                                         attention_mode=args.attention_mode,
+                                         compress_kv_factor=args.compress_kv_factor,
+                                         use_rope=args.use_rope,
+                                         model_max_length=args.model_max_length,
+                                         use_moreh_spatial_attention=True,
+                                         use_moreh_spatial_cross_attention=False,
+                                         use_moreh_temporal_attention=True)
     model.gradient_checkpointing = args.gradient_checkpointing
 
     # use pretrained model?

@@ -11,32 +11,26 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import math
 import html
 import inspect
+import math
 import re
 import urllib.parse as ul
+from dataclasses import dataclass
 from typing import Callable, List, Optional, Tuple, Union
 
-import torch
 import einops
-from einops import rearrange
-from transformers import T5EncoderModel, T5Tokenizer
-
+import torch
+import torchvision.transforms as T
 from diffusers.image_processor import VaeImageProcessor
 from diffusers.models import AutoencoderKL, Transformer2DModel
-from diffusers.schedulers import DPMSolverMultistepScheduler
-from diffusers.utils import (
-    BACKENDS_MAPPING,
-    is_bs4_available,
-    is_ftfy_available,
-    logging,
-    replace_example_docstring,
-)
-from diffusers.utils.torch_utils import randn_tensor
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline
-from diffusers.utils import BaseOutput
-from dataclasses import dataclass
+from diffusers.schedulers import DPMSolverMultistepScheduler
+from diffusers.utils import (BACKENDS_MAPPING, BaseOutput, is_bs4_available, is_ftfy_available, logging,
+                             replace_example_docstring)
+from diffusers.utils.torch_utils import randn_tensor
+from einops import rearrange
+from transformers import T5EncoderModel, T5Tokenizer
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -90,26 +84,27 @@ class VideoGenPipeline(DiffusionPipeline):
         scheduler ([`SchedulerMixin`]):
             A scheduler to be used in combination with `transformer` to denoise the encoded image latents.
     """
-    bad_punct_regex = re.compile(
-        r"[" + "#®•©™&@·º½¾¿¡§~" + "\)" + "\(" + "\]" + "\[" + "\}" + "\{" + "\|" + "\\" + "\/" + "\*" + r"]{1,}"
-    )  # noqa
+    bad_punct_regex = re.compile(r"[" + "#®•©™&@·º½¾¿¡§~" + "\)" + "\(" + "\]" + "\[" + "\}" + "\{" + "\|" + "\\" +
+                                 "\/" + "\*" + r"]{1,}")  # noqa
 
     _optional_components = ["tokenizer", "text_encoder"]
     model_cpu_offload_seq = "text_encoder->transformer->vae"
 
     def __init__(
-            self,
-            tokenizer: T5Tokenizer,
-            text_encoder: T5EncoderModel,
-            vae: AutoencoderKL,
-            transformer: Transformer2DModel,
-            scheduler: DPMSolverMultistepScheduler,
+        self,
+        tokenizer: T5Tokenizer,
+        text_encoder: T5EncoderModel,
+        vae: AutoencoderKL,
+        transformer: Transformer2DModel,
+        scheduler: DPMSolverMultistepScheduler,
     ):
         super().__init__()
 
-        self.register_modules(
-            tokenizer=tokenizer, text_encoder=text_encoder, vae=vae, transformer=transformer, scheduler=scheduler
-        )
+        self.register_modules(tokenizer=tokenizer,
+                              text_encoder=text_encoder,
+                              vae=vae,
+                              transformer=transformer,
+                              scheduler=scheduler)
 
         # self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1)
 
@@ -124,16 +119,16 @@ class VideoGenPipeline(DiffusionPipeline):
 
     # Adapted from diffusers.pipelines.deepfloyd_if.pipeline_if.encode_prompt
     def encode_prompt(
-            self,
-            prompt: Union[str, List[str]],
-            do_classifier_free_guidance: bool = True,
-            negative_prompt: str = "",
-            num_images_per_prompt: int = 1,
-            device: Optional[torch.device] = None,
-            prompt_embeds: Optional[torch.FloatTensor] = None,
-            negative_prompt_embeds: Optional[torch.FloatTensor] = None,
-            clean_caption: bool = False,
-            mask_feature: bool = True,
+        self,
+        prompt: Union[str, List[str]],
+        do_classifier_free_guidance: bool = True,
+        negative_prompt: str = "",
+        num_images_per_prompt: int = 1,
+        device: Optional[torch.device] = None,
+        prompt_embeds: Optional[torch.FloatTensor] = None,
+        negative_prompt_embeds: Optional[torch.FloatTensor] = None,
+        clean_caption: bool = False,
+        mask_feature: bool = True,
     ):
         r"""
         Encodes the prompt into text encoder hidden states.
@@ -192,13 +187,11 @@ class VideoGenPipeline(DiffusionPipeline):
             untruncated_ids = self.tokenizer(prompt, padding="longest", return_tensors="pt").input_ids
 
             if untruncated_ids.shape[-1] >= text_input_ids.shape[-1] and not torch.equal(
-                    text_input_ids, untruncated_ids
-            ):
-                removed_text = self.tokenizer.batch_decode(untruncated_ids[:, max_length - 1: -1])
+                    text_input_ids, untruncated_ids):
+                removed_text = self.tokenizer.batch_decode(untruncated_ids[:, max_length - 1:-1])
                 logger.warning(
                     "The following part of your input was truncated because the model can only handle sequences up to"
-                    f" {max_length} tokens: {removed_text}"
-                )
+                    f" {max_length} tokens: {removed_text}")
 
             attention_mask = text_inputs.attention_mask.to(device)
             prompt_embeds_attention_mask = attention_mask
@@ -269,9 +262,8 @@ class VideoGenPipeline(DiffusionPipeline):
             prompt_embeds = prompt_embeds.unsqueeze(1)
             masked_prompt_embeds, keep_indices = self.mask_text_embeddings(prompt_embeds, prompt_embeds_attention_mask)
             masked_prompt_embeds = masked_prompt_embeds.squeeze(1)
-            masked_negative_prompt_embeds = (
-                negative_prompt_embeds[:, :keep_indices, :] if negative_prompt_embeds is not None else None
-            )
+            masked_negative_prompt_embeds = (negative_prompt_embeds[:, :keep_indices, :]
+                                             if negative_prompt_embeds is not None else None)
 
             # import torch.nn.functional as F
 
@@ -305,57 +297,47 @@ class VideoGenPipeline(DiffusionPipeline):
         return extra_step_kwargs
 
     def check_inputs(
-            self,
-            prompt,
-            height,
-            width,
-            negative_prompt,
-            callback_steps,
-            prompt_embeds=None,
-            negative_prompt_embeds=None,
+        self,
+        prompt,
+        height,
+        width,
+        negative_prompt,
+        callback_steps,
+        prompt_embeds=None,
+        negative_prompt_embeds=None,
     ):
         if height % 8 != 0 or width % 8 != 0:
             raise ValueError(f"`height` and `width` have to be divisible by 8 but are {height} and {width}.")
 
-        if (callback_steps is None) or (
-                callback_steps is not None and (not isinstance(callback_steps, int) or callback_steps <= 0)
-        ):
-            raise ValueError(
-                f"`callback_steps` has to be a positive integer but is {callback_steps} of type"
-                f" {type(callback_steps)}."
-            )
+        if (callback_steps is None) or (callback_steps is not None and
+                                        (not isinstance(callback_steps, int) or callback_steps <= 0)):
+            raise ValueError(f"`callback_steps` has to be a positive integer but is {callback_steps} of type"
+                             f" {type(callback_steps)}.")
 
         if prompt is not None and prompt_embeds is not None:
             raise ValueError(
                 f"Cannot forward both `prompt`: {prompt} and `prompt_embeds`: {prompt_embeds}. Please make sure to"
-                " only forward one of the two."
-            )
+                " only forward one of the two.")
         elif prompt is None and prompt_embeds is None:
             raise ValueError(
-                "Provide either `prompt` or `prompt_embeds`. Cannot leave both `prompt` and `prompt_embeds` undefined."
-            )
+                "Provide either `prompt` or `prompt_embeds`. Cannot leave both `prompt` and `prompt_embeds` undefined.")
         elif prompt is not None and (not isinstance(prompt, str) and not isinstance(prompt, list)):
             raise ValueError(f"`prompt` has to be of type `str` or `list` but is {type(prompt)}")
 
         if prompt is not None and negative_prompt_embeds is not None:
-            raise ValueError(
-                f"Cannot forward both `prompt`: {prompt} and `negative_prompt_embeds`:"
-                f" {negative_prompt_embeds}. Please make sure to only forward one of the two."
-            )
+            raise ValueError(f"Cannot forward both `prompt`: {prompt} and `negative_prompt_embeds`:"
+                             f" {negative_prompt_embeds}. Please make sure to only forward one of the two.")
 
         if negative_prompt is not None and negative_prompt_embeds is not None:
-            raise ValueError(
-                f"Cannot forward both `negative_prompt`: {negative_prompt} and `negative_prompt_embeds`:"
-                f" {negative_prompt_embeds}. Please make sure to only forward one of the two."
-            )
+            raise ValueError(f"Cannot forward both `negative_prompt`: {negative_prompt} and `negative_prompt_embeds`:"
+                             f" {negative_prompt_embeds}. Please make sure to only forward one of the two.")
 
         if prompt_embeds is not None and negative_prompt_embeds is not None:
             if prompt_embeds.shape != negative_prompt_embeds.shape:
                 raise ValueError(
                     "`prompt_embeds` and `negative_prompt_embeds` must have the same shape when passed directly, but"
                     f" got: `prompt_embeds` {prompt_embeds.shape} != `negative_prompt_embeds`"
-                    f" {negative_prompt_embeds.shape}."
-                )
+                    f" {negative_prompt_embeds.shape}.")
 
     # Copied from diffusers.pipelines.deepfloyd_if.pipeline_if.IFPipeline._text_preprocessing
     def _text_preprocessing(self, text, clean_caption=False):
@@ -501,12 +483,21 @@ class VideoGenPipeline(DiffusionPipeline):
         return caption.strip()
 
     # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.StableDiffusionPipeline.prepare_latents
-    def prepare_latents(self, batch_size, num_channels_latents, num_frames, height, width, dtype, device, generator,
+    def prepare_latents(self,
+                        batch_size,
+                        num_channels_latents,
+                        num_frames,
+                        height,
+                        width,
+                        dtype,
+                        device,
+                        generator,
                         latents=None):
         shape = (
             batch_size,
             num_channels_latents,
-            (math.ceil((int(num_frames) - 1) / self.vae.vae_scale_factor[0]) + 1) if int(num_frames) % 2 == 1 else math.ceil(int(num_frames) / self.vae.vae_scale_factor[0]), 
+            (math.ceil((int(num_frames) - 1) / self.vae.vae_scale_factor[0]) + 1) if int(num_frames) %
+            2 == 1 else math.ceil(int(num_frames) / self.vae.vae_scale_factor[0]),
             math.ceil(int(height) / self.vae.vae_scale_factor[1]),
             math.ceil(int(width) / self.vae.vae_scale_factor[2]),
         )
@@ -523,28 +514,28 @@ class VideoGenPipeline(DiffusionPipeline):
     @torch.no_grad()
     @replace_example_docstring(EXAMPLE_DOC_STRING)
     def __call__(
-            self,
-            prompt: Union[str, List[str]] = None,
-            negative_prompt: str = "",
-            num_inference_steps: int = 20,
-            timesteps: List[int] = None,
-            guidance_scale: float = 4.5,
-            num_images_per_prompt: Optional[int] = 1,
-            num_frames: Optional[int] = None,
-            height: Optional[int] = None,
-            width: Optional[int] = None,
-            eta: float = 0.0,
-            generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
-            latents: Optional[torch.FloatTensor] = None,
-            prompt_embeds: Optional[torch.FloatTensor] = None,
-            negative_prompt_embeds: Optional[torch.FloatTensor] = None,
-            output_type: Optional[str] = "pil",
-            return_dict: bool = True,
-            callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
-            callback_steps: int = 1,
-            clean_caption: bool = True,
-            mask_feature: bool = True,
-            enable_temporal_attentions: bool = True,
+        self,
+        prompt: Union[str, List[str]] = None,
+        negative_prompt: str = "",
+        num_inference_steps: int = 20,
+        timesteps: List[int] = None,
+        guidance_scale: float = 4.5,
+        num_images_per_prompt: Optional[int] = 1,
+        num_frames: Optional[int] = None,
+        height: Optional[int] = None,
+        width: Optional[int] = None,
+        eta: float = 0.0,
+        generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
+        latents: Optional[torch.FloatTensor] = None,
+        prompt_embeds: Optional[torch.FloatTensor] = None,
+        negative_prompt_embeds: Optional[torch.FloatTensor] = None,
+        output_type: Optional[str] = "pil",
+        return_dict: bool = True,
+        callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
+        callback_steps: int = 1,
+        clean_caption: bool = True,
+        mask_feature: bool = True,
+        enable_temporal_attentions: bool = True,
     ) -> Union[VideoPipelineOutput, Tuple]:
         """
         Function invoked when calling the pipeline for generation.
@@ -618,9 +609,7 @@ class VideoGenPipeline(DiffusionPipeline):
         # 1. Check inputs. Raise error if not correct
         # height = height or self.transformer.config.sample_size * self.vae_scale_factor
         # width = width or self.transformer.config.sample_size * self.vae_scale_factor
-        self.check_inputs(
-            prompt, height, width, negative_prompt, callback_steps, prompt_embeds, negative_prompt_embeds
-        )
+        self.check_inputs(prompt, height, width, negative_prompt, callback_steps, prompt_embeds, negative_prompt_embeds)
 
         # 2. Default height and width to transformer
         if prompt is not None and isinstance(prompt, str):
@@ -718,7 +707,6 @@ class VideoGenPipeline(DiffusionPipeline):
                     enable_temporal_attentions=enable_temporal_attentions,
                     return_dict=False,
                 )[0]
-
                 # perform guidance
                 if do_classifier_free_guidance:
                     noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
@@ -732,6 +720,14 @@ class VideoGenPipeline(DiffusionPipeline):
 
                 # compute previous image: x_t -> x_t-1
                 latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]
+
+                if not output_type == 'latents':
+                    inter_video = self.decode_latents(latents)
+                    inter_video = inter_video[:, :num_frames, :height, :width]
+
+                    for j in range(inter_video.shape[1]):
+                        img = inter_video[0][j].permute(2, 0, 1).cpu()
+                        T.ToPILImage()(img / 255).save(f'test/img_{i}_{j}.png')
 
                 # call the callback, if provided
                 if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
@@ -751,12 +747,13 @@ class VideoGenPipeline(DiffusionPipeline):
         self.maybe_free_model_hooks()
 
         if not return_dict:
-            return (video,)
+            return (video, )
 
         return VideoPipelineOutput(video=video)
 
     def decode_latents(self, latents):
-        video = self.vae.decode(latents) # b t c h w
+        video = self.vae.decode(latents)  # b t c h w
         # b t c h w -> b t h w c
-        video = ((video / 2.0 + 0.5).clamp(0, 1) * 255).to(dtype=torch.uint8).cpu().permute(0, 1, 3, 4, 2).contiguous()
+        video = ((video / 2.0 + 0.5).clamp(0, 1) * 255).cpu().to(dtype=torch.uint8).cpu().permute(0, 1, 3, 4,
+                                                                                                  2).contiguous()
         return video

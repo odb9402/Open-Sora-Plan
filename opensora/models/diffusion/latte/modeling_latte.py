@@ -74,7 +74,7 @@ class LatteT2V(ModelMixin, ConfigMixin):
                  norm_eps: float = 1e-5,
                  attention_type: str = "default",
                  caption_channels: int = None,
-                 video_length: int = 16,
+                 video_length: int = 17,
                  attention_mode: str = 'flash',
                  use_rope: bool = False,
                  model_max_length: int = 300,

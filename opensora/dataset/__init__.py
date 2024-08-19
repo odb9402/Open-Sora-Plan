@@ -1,13 +1,11 @@
-from torchvision.transforms import Compose
+from torchvision import transforms
+from torchvision.transforms import Compose, Lambda
 from transformers import AutoTokenizer
 
 from .feature_datasets import T2V_Feature_dataset, T2V_T5_Feature_dataset
-from torchvision import transforms
-from torchvision.transforms import Lambda
-
 from .t2v_datasets import T2V_dataset
-from .transform import ToTensorVideo, TemporalRandomCrop, RandomHorizontalFlipVideo, CenterCropResizeVideo, LongSideResizeVideo, SpatialStrideCropVideo
-
+from .transform import (CenterCropResizeVideo, LongSideResizeVideo, RandomHorizontalFlipVideo, SpatialStrideCropVideo,
+                        TemporalRandomCrop, ToTensorVideo)
 
 ae_norm = {
     'CausalVAEModel_4x8x8': Lambda(lambda x: 2. * x - 1.),
@@ -24,7 +22,6 @@ ae_norm = {
     'vqgan_imagenet_f16_1024': Lambda(lambda x: 2. * x - 1.),
     'vqgan_imagenet_f16_16384': Lambda(lambda x: 2. * x - 1.),
     'vqgan_gumbel_f8': Lambda(lambda x: 2. * x - 1.),
-
 }
 ae_denorm = {
     'CausalVAEModel_4x8x8': lambda x: (x + 1.) / 2.,
@@ -43,6 +40,7 @@ ae_denorm = {
     'vqgan_gumbel_f8': lambda x: (x + 1.) / 2.,
 }
 
+
 def getdataset(args):
     temporal_sample = TemporalRandomCrop(args.num_frames * args.sample_rate)  # 16 x
     norm_fun = ae_norm[args.ae]
@@ -51,15 +49,13 @@ def getdataset(args):
             resize = [
                 LongSideResizeVideo(args.max_image_size, skip_low_resolution=True),
                 SpatialStrideCropVideo(args.stride)
-                ]
+            ]
         else:
-            resize = [CenterCropResizeVideo(args.max_image_size), ]
-        transform = transforms.Compose([
-            ToTensorVideo(),
-            *resize, 
-            # RandomHorizontalFlipVideo(p=0.5),  # in case their caption have position decription
-            norm_fun
-        ])
+            resize = [
+                CenterCropResizeVideo(args.max_image_size),
+            ]
+        transform = transforms.Compose([ToTensorVideo(), *resize, norm_fun])
         tokenizer = AutoTokenizer.from_pretrained(args.text_encoder_name, cache_dir=args.cache_dir)
         return T2V_dataset(args, transform=transform, temporal_sample=temporal_sample, tokenizer=tokenizer)
+
     raise NotImplementedError(args.dataset)

@@ -1,51 +1,98 @@
+import argparse
 import math
 import os
-import torch
-import argparse
-import torchvision
+import sys
 
-from diffusers.schedulers import (DDIMScheduler, DDPMScheduler, PNDMScheduler,
-                                  EulerDiscreteScheduler, DPMSolverMultistepScheduler,
-                                  HeunDiscreteScheduler, EulerAncestralDiscreteScheduler,
-                                  DEISMultistepScheduler, KDPM2AncestralDiscreteScheduler)
-from diffusers.schedulers.scheduling_dpmsolver_singlestep import DPMSolverSinglestepScheduler
+import torch
+import torchvision
 from diffusers.models import AutoencoderKL, AutoencoderKLTemporalDecoder
+from diffusers.schedulers import (DDIMScheduler, DDPMScheduler, DEISMultistepScheduler, DPMSolverMultistepScheduler,
+                                  EulerAncestralDiscreteScheduler, EulerDiscreteScheduler, HeunDiscreteScheduler,
+                                  KDPM2AncestralDiscreteScheduler, PNDMScheduler)
+from diffusers.schedulers.scheduling_dpmsolver_singlestep import \
+    DPMSolverSinglestepScheduler
 from omegaconf import OmegaConf
 from torchvision.utils import save_image
-from transformers import T5EncoderModel, T5Tokenizer, AutoTokenizer
+from transformers import AutoTokenizer, T5EncoderModel, T5Tokenizer
 
-import os, sys
-
-from opensora.models.ae import ae_stride_config, getae, getae_wrapper
-from opensora.models.ae.videobase import CausalVQVAEModelWrapper, CausalVAEModelWrapper
+from opensora.models.ae import (ae_channel_config, ae_stride_config, getae, getae_wrapper)
+from opensora.models.ae.videobase import (CausalVAEModelWrapper, CausalVQVAEModelWrapper)
+from opensora.models.diffusion import Diffusion_models
 from opensora.models.diffusion.latte.modeling_latte import LatteT2V
 from opensora.models.text_encoder import get_text_enc
 from opensora.utils.utils import save_video_grid
 
 sys.path.append(os.path.split(sys.path[0])[0])
-from pipeline_videogen import VideoGenPipeline
-
 import imageio
+from pipeline_videogen import VideoGenPipeline
 
 
 def main(args):
-    # torch.manual_seed(args.seed) 
+    # torch.manual_seed(args.seed)
     torch.set_grad_enabled(False)
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    vae = getae_wrapper(args.ae)(args.model_path, subfolder="vae", cache_dir=args.cache_dir).to(device, dtype=torch.float16)
-    # vae = getae_wrapper(args.ae)(args.ae_path).to(device, dtype=torch.float16)
+    vae = getae_wrapper(args.ae)(args.ae_path, subfolder="vae", cache_dir=args.cache_dir).to(device)
+    # vae = getae_wrapper(args.ae)("/moai/model/open_sora_plan_ckpts/vae").to(device)
+
     if args.enable_tiling:
         vae.vae.enable_tiling()
         vae.vae.tile_overlap_factor = args.tile_overlap_factor
     vae.vae_scale_factor = ae_stride_config[args.ae]
     # Load model:
-    transformer_model = LatteT2V.from_pretrained(args.model_path, subfolder=args.version, cache_dir=args.cache_dir, torch_dtype=torch.float16).to(device)
-    # transformer_model = LatteT2V.from_pretrained(args.model_path, low_cpu_mem_usage=False, device_map=None, torch_dtype=torch.float16).to(device)
-    
+    try:
+        transformer_model = LatteT2V.from_pretrained(args.model_path, subfolder=args.version,
+                                                     cache_dir=args.cache_dir).to(device)
+    except OSError:
+        ae_stride_t, ae_stride_h, ae_stride_w = ae_stride_config[args.ae]
+        latent_size = (args.height // ae_stride_h, args.width // ae_stride_w)
+        args.video_length = video_length = args.num_frames // ae_stride_t + 1
+        transformer_model = Diffusion_models["LatteT2V-XL/122"](in_channels=ae_channel_config[args.ae],
+                                                                out_channels=ae_channel_config[args.ae] * 2,
+                                                                attention_bias=True,
+                                                                sample_size=latent_size,
+                                                                num_vector_embeds=None,
+                                                                activation_fn="gelu-approximate",
+                                                                num_embeds_ada_norm=1000,
+                                                                use_linear_projection=False,
+                                                                only_cross_attention=False,
+                                                                double_self_attention=False,
+                                                                upcast_attention=False,
+                                                                norm_elementwise_affine=False,
+                                                                norm_eps=1e-6,
+                                                                attention_type='default',
+                                                                video_length=video_length,
+                                                                attention_mode='xformers',
+                                                                compress_kv_factor=1,
+                                                                use_rope=True,
+                                                                model_max_length=300,
+                                                                use_moreh_spatial_attention=False,
+                                                                use_moreh_spatial_cross_attention=False,
+                                                                use_moreh_temporal_attention=False)
+        state_dict = torch.load(args.model_path)
+        # Create a new state_dict with updated keys
+        new_state_dict = {}
+        for key in state_dict.keys():
+            # Check if the key starts with "dit."
+            if key.startswith("dit."):
+                # Remove the "dit." prefix
+                new_key = key[len("dit."):]
+            else:
+                # Keep the key as it is if it doesn't match the pattern
+                new_key = key
+
+            # Add the key-value pair to the new state_dict
+            new_state_dict[new_key] = state_dict[key]
+
+        state_dict = new_state_dict
+
+        #state_dict = state_dict['model_state_dict']
+        transformer_model.load_state_dict(state_dict, strict=False)
+        transformer_model.to(dtype=torch.float32)
+
     transformer_model.force_images = args.force_images
     tokenizer = T5Tokenizer.from_pretrained(args.text_encoder_name, cache_dir=args.cache_dir)
-    text_encoder = T5EncoderModel.from_pretrained(args.text_encoder_name, cache_dir=args.cache_dir, torch_dtype=torch.float16).to(device)
+    text_encoder = T5EncoderModel.from_pretrained(args.text_encoder_name, cache_dir=args.cache_dir).to(device)
 
     if args.force_images:
         ext = 'jpg'
@@ -96,41 +143,49 @@ def main(args):
         args.text_prompt = [i.strip() for i in text_prompt]
     for idx, prompt in enumerate(args.text_prompt):
         print('Processing the ({}) prompt'.format(prompt))
-        videos = videogen_pipeline(prompt,
-                                   num_frames=args.num_frames,
-                                   height=args.height,
-                                   width=args.width,
-                                   num_inference_steps=args.num_sampling_steps,
-                                   guidance_scale=args.guidance_scale,
-                                   enable_temporal_attentions=not args.force_images,
-                                   num_images_per_prompt=1,
-                                   mask_feature=True,
-                                   ).video
-        print(videos.shape)
+        videos = videogen_pipeline(
+            prompt,
+            num_frames=args.num_frames,
+            height=args.height,
+            width=args.width,
+            num_inference_steps=args.num_sampling_steps,
+            guidance_scale=args.guidance_scale,
+            enable_temporal_attentions=not args.force_images,
+            num_images_per_prompt=1,
+            mask_feature=True,
+        ).video
         try:
             if args.force_images:
                 videos = videos[:, 0].permute(0, 3, 1, 2)  # b t h w c -> b c h w
-                save_image(videos / 255.0, os.path.join(args.save_img_path, f'{idx}.{ext}'),
-                           nrow=1, normalize=True, value_range=(0, 1))  # t c h w
+                save_image(videos / 255.0,
+                           os.path.join(args.save_img_path, f'{idx}.{ext}'),
+                           nrow=1,
+                           normalize=True,
+                           value_range=(0, 1))  # t c h w
 
             else:
-                imageio.mimwrite(
-                    os.path.join(
-                        args.save_img_path, f'{idx}.{ext}'), videos[0],
-                    fps=args.fps, quality=9)  # highest quality is 10, lowest is 0
+                imageio.mimwrite(os.path.join(args.save_img_path, f'{idx}.{ext}'), videos[0], fps=args.fps,
+                                 quality=9)  # highest quality is 10, lowest is 0
         except:
             print('Error when saving {}'.format(prompt))
         video_grids.append(videos)
     video_grids = torch.cat(video_grids, dim=0)
 
-
     # torchvision.io.write_video(args.save_img_path + '_%04d' % args.run_time + '-.mp4', video_grids, fps=6)
     if args.force_images:
-        save_image(video_grids / 255.0, os.path.join(args.save_img_path, f'{args.sample_method}_gs{args.guidance_scale}_s{args.num_sampling_steps}.{ext}'),
-                   nrow=math.ceil(math.sqrt(len(video_grids))), normalize=True, value_range=(0, 1))
+        save_image(video_grids / 255.0,
+                   os.path.join(args.save_img_path,
+                                f'{args.sample_method}_gs{args.guidance_scale}_s{args.num_sampling_steps}.{ext}'),
+                   nrow=math.ceil(math.sqrt(len(video_grids))),
+                   normalize=True,
+                   value_range=(0, 1))
     else:
         video_grids = save_video_grid(video_grids)
-        imageio.mimwrite(os.path.join(args.save_img_path, f'{args.sample_method}_gs{args.guidance_scale}_s{args.num_sampling_steps}.{ext}'), video_grids, fps=args.fps, quality=9)
+        imageio.mimwrite(os.path.join(args.save_img_path,
+                                      f'{args.sample_method}_gs{args.guidance_scale}_s{args.num_sampling_steps}.{ext}'),
+                         video_grids,
+                         fps=args.fps,
+                         quality=9)
 
     print('save path {}'.format(args.save_img_path))
 

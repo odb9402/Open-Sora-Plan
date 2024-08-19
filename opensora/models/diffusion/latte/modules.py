@@ -360,6 +360,10 @@ class Attention(nn.Module):
                                           rope_scaling=rope_scaling,
                                           compress_kv_factor=compress_kv_factor)
                          if hasattr(F, "scaled_dot_product_attention") and self.scale_qk else AttnProcessor())
+            if not hasattr(F, "scaled_dot_product_attention"):
+                logger.warning(
+                    "Cannot use AttentionProcessorV2 due to its torch version (maybe use moreh_attention in MOREH or update torch in CUDA?)"
+                )
         elif processor == 'moreh_attention':
             processor = MorehAttnProcessor(self,
                                            self.inner_dim,
@@ -918,6 +922,7 @@ class MorehAttnProcessor:
             else:
                 raise NotImplementedError
 
+        ## HERE, replicate the sementics of the ScaledDotProductAttention of the AttnProcessor2_0
         q_len = query.size(-2)
         k_len = key.size(-2)
         masked_bias = torch.zeros((batch_size, attn.heads, query.size(-2), key.size(-2)), device='cuda')
@@ -935,7 +940,6 @@ class MorehAttnProcessor:
                                                   attn_weight_scale_factor=scale_factor,
                                                   recompute_mode=False,
                                                   num_kv_groups=1)
-        hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, attn.heads * head_dim)
         hidden_states = hidden_states.to(query.dtype)
 
         # linear proj

@@ -716,27 +716,17 @@ class GaussianDiffusion_T:
                 terms["loss"] *= self.num_timesteps
         elif self.loss_type == LossType.MSE or self.loss_type == LossType.RESCALED_MSE:
             model_output = model(x_t, t, **model_kwargs)
-            # try:
-            #     model_output = model(x_t, t, **model_kwargs).sample # for tav unet
-            # except:
-            #     model_output = model(x_t, t, **model_kwargs)
 
             if self.model_var_type in [
                     ModelVarType.LEARNED,
                     ModelVarType.LEARNED_RANGE,
             ]:
-                #B, F, C = x_t.shape[:3]
-                #assert model_output.shape == (B, F, C * 2, *x_t.shape[3:])
-                #the output shape of uncondition or class condition latte is not the same as the latte_t2v
-                #BFCHW vs BCFHW
                 B, C, F = x_t.shape[:3]
                 assert model_output[0].shape == (B, C * 2, F, *x_t.shape[3:])
-                #model_output, model_var_values = th.split(model_output, C, dim=2)
                 model_output, model_var_values = th.split(model_output[0], C, dim=1)
 
                 # Learn the variance using the variational bound, but don't let
                 # it affect our mean prediction.
-                #frozen_out = th.cat([model_output.detach(), model_var_values], dim=2)
                 frozen_out = th.cat([model_output.detach(), model_var_values], dim=1)
                 terms["vb"] = self._vb_terms_bpd(model=lambda *args, r=frozen_out: r,
                                                  x_start=x_start,
@@ -756,7 +746,7 @@ class GaussianDiffusion_T:
             }[self.model_mean_type]
             assert model_output.shape == target.shape == x_start.shape
             terms["mse"] = mean_flat(((target - model_output) ** 2) * mask)
-            # import ipdb;ipdb.set_trace()
+
             if "vb" in terms:
                 terms["loss"] = terms["mse"] + terms["vb"]
             else:
