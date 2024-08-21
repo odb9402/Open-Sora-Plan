@@ -5,6 +5,9 @@ import sys
 
 import torch
 import torchvision
+import random
+import numpy as np
+from loguru import logger
 from diffusers.models import AutoencoderKL, AutoencoderKLTemporalDecoder
 from diffusers.schedulers import (DDIMScheduler, DDPMScheduler, DEISMultistepScheduler, DPMSolverMultistepScheduler,
                                   EulerAncestralDiscreteScheduler, EulerDiscreteScheduler, HeunDiscreteScheduler,
@@ -28,7 +31,9 @@ from pipeline_videogen import VideoGenPipeline
 
 
 def main(args):
-    # torch.manual_seed(args.seed)
+    torch.manual_seed(0)
+    random.seed(0)
+    np.random.seed(0)
     torch.set_grad_enabled(False)
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -87,8 +92,17 @@ def main(args):
         state_dict = new_state_dict
 
         #state_dict = state_dict['model_state_dict']
-        transformer_model.load_state_dict(state_dict, strict=False)
-        transformer_model.to(dtype=torch.float32)
+        missing_keys, unexpected_keys = transformer_model.load_state_dict(state_dict, strict=False)
+
+        if missing_keys:
+            logger.warning(f"Missing keys: {missing_keys}")
+        else:
+            logger.info("All keys were successfully loaded.")
+
+        if unexpected_keys:
+            logger.warning(f"Unexpected keys: {unexpected_keys}")
+        else:
+            logger.info("No unexpected keys found in the state_dict.")
 
     transformer_model.force_images = args.force_images
     tokenizer = T5Tokenizer.from_pretrained(args.text_encoder_name, cache_dir=args.cache_dir)
