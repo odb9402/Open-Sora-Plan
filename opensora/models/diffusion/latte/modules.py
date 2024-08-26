@@ -689,7 +689,7 @@ class Attention(nn.Module):
         else:
             baddbmm_input = attention_mask
             beta = 1
-
+        
         attention_scores = torch.baddbmm(
             baddbmm_input,
             query,
@@ -931,6 +931,7 @@ class MorehAttnProcessor:
         key = key.transpose(1, 2).reshape(batch_size, k_len, hidden_size).contiguous()
         value = value.transpose(1, 2).reshape(batch_size, k_len, hidden_size).contiguous()
         scale_factor = 1.0 / float(head_dim) ** 0.5
+        
         hidden_states = ScaledDotProductAttention(query,
                                                   key,
                                                   value,
